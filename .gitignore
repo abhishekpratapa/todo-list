@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+# local test data never belongs in the repo
+/data/
+*.tmp

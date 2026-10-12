@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quick Capture</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/capture.css">
+</head>
+<body class="capture">
+  <form id="capture" autocomplete="off">
+    <span class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M6 12.5l4 4L18 8.5"/></svg>
+    </span>
+    <input id="text" placeholder="New task" aria-label="New task" spellcheck="false" autofocus>
+  </form>
+  <div class="preview" id="preview" aria-live="polite"></div>
+  <footer>
+    <span><kbd>⏎</kbd> Add</span>
+    <span><kbd>⌘⏎</kbd> Add another</span>
+    <span><kbd>esc</kbd> Close</span>
+    <span class="status" id="status" role="status"></span>
+  </footer>
+  <script type="module" src="/capture.js"></script>
+</body>
+</html>

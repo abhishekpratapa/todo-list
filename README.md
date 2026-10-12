@@ -1,0 +1,178 @@
+# Todos
+
+A Mac app for a todo list shared between you and your Claude sessions. You manage tasks in the app. Claude Code and Cowork sessions read and update the same list through an MCP server bundled inside the app. Changes from any session show up in the window immediately.
+
+```
+electron/main.js     app shell: window, menus, Dock badge, menu bar item, quick capture, reminders
+electron/capture-preload.cjs   bridge for the quick-capture panel
+electron/handoff.js  "Start with Claude": opens a Claude session on a task
+src/quickadd.js      one-line entry parser ("Renew passport fri !high #personal")
+public/              dashboard UI (vanilla HTML/CSS/JS); markdown.js renders notes safely
+src/store.js         shared JSON store with file locking (safe for many concurrent sessions)
+src/server.js        dashboard server (REST API + live updates); embedded in the app or run via `npm start`
+src/mcp.js           MCP server (stdio) that Claude launches
+build/icon.png       app icon (regenerate with `npm run icon`)
+```
+
+## Install
+
+Open `dist/Todos-<version>-arm64.dmg` and drag **Todos** to Applications.
+
+The build is ad-hoc signed, not notarized. It opens normally on the Mac that built it. On another Mac, right-click the app and choose **Open** the first time.
+
+## Quick capture
+
+Press **⌃⌥T** (Control-Option-T) in any app to open a small capture box. Type one line and press Enter. The box shows what it understood as you type, then gets out of the way: the app you were in stays in front.
+
+| You type | What happens |
+| --- | --- |
+| `today`, `tomorrow`, `fri`, `next friday`, `next week`, `in 3 days`, `oct 20`, `2026-10-20` | Sets the due date |
+| `3pm`, `9:30am`, `15:00`, `noon` | Sets a reminder at that time, due that day (today, or tomorrow if the time has passed) |
+| `every day`, `every weekday`, `every week`, `every 2 weeks`, `every month`, `every year`, `every friday` | Makes it repeat |
+| `!high`, `!med`, `!low` | Priority |
+| `#name` | Project |
+| `@name` | Tag (`@claude` assigns the task to Claude) |
+
+For example: `Renew passport fri !high #personal`, `Call dentist tomorrow 3pm`, `Water plants every day`.
+
+- Dates, times and repeats are picked up anywhere in the line. The `!`, `#` and `@` markers only count at the start or end of the line, so "Reply to @sam about PR #42" keeps its title.
+- To keep a word literal, put a backslash in front of it: `Watch \tomorrow never dies`.
+- **Enter** adds the task and closes. **⌘Enter** adds it and stays open for another. **Esc** closes.
+- The same one-line entry works in the add bar at the top of the dashboard.
+- Change or turn off the shortcut under **Todos → Quick Capture Shortcut**. If another app already uses the keys, the menu says so.
+- Other launchers can open the box with `open -a Todos --args --capture`.
+
+## Hand off to Claude
+
+Open a task and click **Start with Claude** to open a Claude Code session on it.
+
+1. The first time for a project, you choose the folder Claude should work in. The app remembers it per project (**Change folder…** picks a different one). Tasks with no project ask each time.
+2. The session opens where the switch next to the button says:
+   - **in the Claude app** (default): opens the desktop app's Code tab with the folder and the prompt filled in. Nothing runs until you check it and press Enter. The app asks you to confirm the folder.
+   - **in Terminal**: starts an interactive `claude` session in that folder straight away. Claude asks before acting, as usual; only the todo tools are pre-approved. If the `claude` command isn't logged in, run `/login` there once.
+3. The task is assigned to Claude and a note is added to its activity.
+
+The prompt tells Claude to read the task with the todo tools, mark it in progress, check off subtasks, comment on progress, mark it done when finished, and mark it blocked with a comment if it needs something from you.
+
+**Notifications.** You get a Mac notification when a Claude session comments on a task, finishes it, or marks it blocked (from any session, not only ones started here). Click it to open the task. They're skipped while the Todos window is in front, since the card flashes there. Turn them off with **Todos → Notify About Claude's Updates**.
+
+The app looks for the `claude` command in `~/.local/bin`, Homebrew's folders, and the Claude desktop app's own copy. Set `TODOS_CLAUDE_BIN` to use a specific one.
+
+## Menu bar
+
+The check icon in the menu bar shows how many tasks are overdue or due today. Click it to see what's overdue, due today, coming in the next 7 days, and undated, and click a task to open it. **New Task…** opens quick capture. Hide the icon with **Todos → Show in Menu Bar**.
+
+## Using the app
+
+- **Stat tiles** (Open, Due today, Overdue, With Claude, Done this week) double as filters. Click one to focus on it.
+- **Add bar**: press `⌘N` or `N` and type a task. One-line entry works here too (`Renew passport fri !high #personal`), or pick a project, priority, or due date with the controls. Press Enter to add it.
+- **Board**: drag cards between To do, In progress, Blocked, and Done, or click the circle to complete a task.
+- **Details**: click a card to edit its title, status, priority, assignee, due date, project, tags, and notes. You can also read the activity log and leave comments.
+- **Subtasks**: add a checklist to any task in its details. The card shows progress (for example 2/5), and Claude can add and check off subtasks too.
+- **Markdown notes**: notes render as Markdown (headings, bold, lists, task lists, code, quotes) with clickable links. Click the notes or **Edit** to change them. Links in comments are clickable too.
+- **Repeating tasks**: set **Repeat** to daily, every weekday, weekly, every 2 weeks, monthly, or yearly. Completing the task creates the next occurrence with the next due date and a fresh checklist. The finished one stays in Done as history.
+- **Reminders**: set **Remind me** to a date and time to get a Mac notification then. Click the notification to open the task. Reminders missed while the app was closed arrive when it next opens. Reminders only fire while the app is running, so turn on **Launch at Login** if you rely on them.
+- **Daily summary**: at 9 AM (or when the app first opens after that) you get one notification listing what's due today and overdue. Turn it off with **Todos → Daily Summary at 9 AM**.
+- **Search**: press `⌘F` or `/`. Press `Esc` to close panels.
+- **Live changes**: cards that Claude changes flash briefly. The activity log shows which session made each change, for example "Claude Code · my-repo" or "Cowork".
+- **Dock badge**: shows how many tasks are overdue or due today.
+- **App menu**:
+  - **Todos → Launch at Login**
+  - **Todos → Daily Summary at 9 AM**
+  - **Todos → Send Test Notification**: use this to check that macOS is allowing notifications from Todos. If nothing appears, allow them in System Settings → Notifications → Todos. Reminders also show as a banner inside the app window either way.
+  - **File → Open in Browser**: the dashboard is also at http://127.0.0.1:7420 while the app runs.
+  - **File → Show Data File in Finder**
+  - **File → Copy Claude Code Setup Command**
+
+Closing the window keeps the app running in the Dock (normal Mac behavior), so the badge stays current. Quit with `⌘Q`. Claude can read and update your todos even when the app isn't running. The app just shows the changes the next time you open it.
+
+## Connecting Claude
+
+The MCP server ships inside the app and runs on the app's own runtime, so you don't need a separate Node install. Setting `ELECTRON_RUN_AS_NODE=1` runs the app binary as plain Node with no window or Dock icon.
+
+**Claude Code** (all projects). **File → Copy Claude Code Setup Command** in the app copies this command:
+
+```bash
+claude mcp add todolist --scope user -e ELECTRON_RUN_AS_NODE=1 -- "/Applications/Todos.app/Contents/MacOS/Todos" "/Applications/Todos.app/Contents/Resources/app/src/mcp.js"
+```
+
+**Claude desktop / Cowork**: add this to `~/Library/Application Support/Claude/claude_desktop_config.json`, then restart Claude:
+
+```json
+{
+  "mcpServers": {
+    "todolist": {
+      "command": "/Applications/Todos.app/Contents/MacOS/Todos",
+      "args": ["/Applications/Todos.app/Contents/Resources/app/src/mcp.js"],
+      "env": { "ELECTRON_RUN_AS_NODE": "1" }
+    }
+  }
+}
+```
+
+If you move the app somewhere other than `/Applications`, update both paths.
+
+### MCP tools
+
+| Tool | What it does |
+| --- | --- |
+| `todo_list` | List todos with a summary. Filter by status (default: open), project, tag, assignee, text, or overdue. |
+| `todo_get` | Get one todo with full notes and activity history. |
+| `todo_add` | Add a todo (title, notes, status, priority, due, project, tags, assignee, subtasks, repeat, remind_at). |
+| `todo_update` | Change fields, add / check off / remove subtasks, and/or post a progress `comment`. |
+| `todo_complete` | Mark one or more todos done, with an optional closing comment. Completing a repeating todo creates its next occurrence. |
+| `todo_delete` | Permanently delete a todo. |
+
+Due dates accept `YYYY-MM-DD`, `today`, `tomorrow`, `yesterday`, `+3d`, `next week`, or a weekday name (`fri`).
+
+Reminder times (`remind_at`) are in your local time and accept `YYYY-MM-DD HH:MM`, `tomorrow 9am`, `fri 14:30`, a bare time (`15:00`, meaning today), or a relative offset (`+2h`, `+30m`).
+
+`repeat` is one of `daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, `yearly`, or `none`.
+
+The server also gives Claude usage instructions:
+
+- Check the list when you ask what's on your plate.
+- Set a task to *in progress* and assign it to Claude when it starts working on it.
+- Comment on progress, and mark the task done when finished.
+- Check off subtasks as it finishes them.
+- Don't fill the list with its own step-by-step work items.
+
+You can ask Claude things like:
+
+- "What's on my todo list?"
+- "Add a weekly todo to publish the changelog every Friday, and remind me at 10am."
+- "Break #7 into subtasks."
+- "Pick up #12 and check off the subtasks as you go."
+
+## Data
+
+Everything lives in `~/Library/Application Support/Todos/data/todos.json`, a plain JSON file that's easy to back up or inspect. The app, the dev server, and every MCP process all use this file, no matter where the code runs from. Writes use a lock directory plus an atomic rename, so the app and any number of Claude sessions can write at the same time safely.
+
+## Development
+
+```bash
+npm install        # Electron + electron-builder (dev only)
+npm run app        # run the app from source
+npm start          # run just the dashboard server, then open http://127.0.0.1:7420
+npm run dist       # build dist/Todos-<version>-arm64.dmg
+```
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `TODO_DATA_FILE` | `~/Library/Application Support/Todos/data/todos.json` | Use a different data file (handy for testing) |
+| `TODO_PORT` | `7420` | Dashboard port. If it's taken, the app falls back to a free port. |
+
+### REST API
+
+The dashboard uses this API. It only listens on 127.0.0.1.
+
+```
+GET    /api/todos          -> { todos, summary, version }
+POST   /api/todos          { title, notes?, status?, priority?, due?, project?, tags?, assignee?,
+                             subtasks?, repeat?, remindAt? }
+PATCH  /api/todos/:id      { any of the fields above, comment?, add_subtasks?, check_subtasks?,
+                             uncheck_subtasks?, remove_subtasks?, rename_subtask? }
+                           -> { todo, next }   (next = new occurrence of a repeating todo, or null)
+DELETE /api/todos/:id
+GET    /api/events         server-sent events; "change" fires on every write
+```

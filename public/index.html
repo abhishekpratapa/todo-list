@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Todo Dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b5bd6'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11.5' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+  <script>if (navigator.userAgent.includes('Electron')) document.documentElement.classList.add('app');</script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M6 12.5l4 4L18 8.5"/></svg>
+      </span>
+      <h1>Todos</h1>
+      <span id="live" class="live" title="Connecting to the dashboard server…">Connecting</span>
+    </div>
+    <label class="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+      <input id="search" type="search" placeholder="Search" autocomplete="off" aria-label="Search todos">
+      <kbd>/</kbd>
+    </label>
+  </header>
+
+  <main>
+    <section class="stats" id="stats" aria-label="Summary"></section>
+
+    <form class="quickadd" id="quickadd" autocomplete="off">
+      <input id="qa-title" class="qa-title" placeholder="Add a task…  e.g. Renew passport fri !high #personal" aria-label="Task title" title="Press N to jump here. Dates (fri, tomorrow 3pm, oct 20), !high, #project, @tag and “every week” are understood." required>
+      <div class="qa-extras">
+        <input id="qa-project" list="project-list" placeholder="Project" aria-label="Project">
+        <select id="qa-priority" aria-label="Priority">
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="low">Low</option>
+        </select>
+        <input id="qa-due" type="date" aria-label="Due date">
+        <button type="submit" class="btn primary">Add</button>
+      </div>
+    </form>
+    <datalist id="project-list"></datalist>
+
+    <nav class="filters" id="filters" aria-label="Filter by project"></nav>
+
+    <section class="board" id="board"></section>
+  </main>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" aria-hidden="true" aria-label="Task details">
+    <div class="drawer-head">
+      <span class="drawer-id" id="d-id"></span>
+      <span class="drawer-created" id="d-created"></span>
+      <button class="icon-btn" id="d-close" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="drawer-body">
+      <textarea id="d-title" class="d-title" rows="1" aria-label="Title"></textarea>
+
+      <div class="seg status-seg" id="d-status" role="group" aria-label="Status">
+        <button data-value="todo">To do</button>
+        <button data-value="in_progress">In progress</button>
+        <button data-value="blocked">Blocked</button>
+        <button data-value="done">Done</button>
+      </div>
+
+      <div class="handoff" id="d-handoff" hidden>
+        <div class="handoff-row">
+          <button class="btn claude-btn" id="d-handoff-start" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>
+            Start with Claude
+          </button>
+          <select id="d-handoff-target" aria-label="Where to open the Claude session">
+            <option value="desktop">in the Claude app</option>
+            <option value="terminal">in Terminal</option>
+          </select>
+        </div>
+        <div class="handoff-row" id="d-handoff-folder-row">
+          <span class="handoff-where" id="d-handoff-where"></span>
+          <button class="link-btn" id="d-handoff-folder" type="button">Change folder…</button>
+        </div>
+      </div>
+
+      <div class="fields">
+        <span class="field-label">Priority</span>
+        <div class="seg small" id="d-priority" role="group" aria-label="Priority">
+          <button data-value="high">High</button>
+          <button data-value="medium">Medium</button>
+          <button data-value="low">Low</button>
+        </div>
+
+        <span class="field-label">Assignee</span>
+        <div class="seg small" id="d-assignee" role="group" aria-label="Assignee">
+          <button data-value="me">Me</button>
+          <button data-value="claude">Claude</button>
+        </div>
+
+        <label class="field-label" for="d-due">Due</label>
+        <div class="due-row">
+          <input id="d-due" type="date">
+          <button class="link-btn" id="d-due-clear" type="button">Clear</button>
+        </div>
+
+        <label class="field-label" for="d-repeat">Repeat</label>
+        <select id="d-repeat">
+          <option value="">Never</option>
+          <option value="daily">Daily</option>
+          <option value="weekdays">Every weekday</option>
+          <option value="weekly">Weekly</option>
+          <option value="biweekly">Every 2 weeks</option>
+          <option value="monthly">Monthly</option>
+          <option value="yearly">Yearly</option>
+        </select>
+
+        <label class="field-label" for="d-remind">Remind me</label>
+        <div class="due-row">
+          <input id="d-remind" type="datetime-local">
+          <button class="link-btn" id="d-remind-clear" type="button">Clear</button>
+        </div>
+
+        <label class="field-label" for="d-project">Project</label>
+        <input id="d-project" list="project-list" placeholder="None">
+
+        <label class="field-label" for="d-tags">Tags</label>
+        <input id="d-tags" placeholder="comma, separated">
+      </div>
+
+      <div class="section-row">
+        <span class="section-label">Subtasks</span>
+        <span class="section-count" id="d-sub-count"></span>
+      </div>
+      <div class="subtasks-box">
+        <div class="progress" id="d-sub-progress" hidden><i></i></div>
+        <ul class="subtasks" id="d-subtasks"></ul>
+        <form class="sub-add" id="d-sub-add">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <input id="d-sub-new" placeholder="Add a subtask" aria-label="New subtask" autocomplete="off">
+        </form>
+      </div>
+
+      <div class="section-row">
+        <label class="section-label" for="d-notes">Notes</label>
+        <button class="link-btn" id="d-notes-edit" type="button">Edit</button>
+      </div>
+      <div class="md notes-view" id="d-notes-view" tabindex="0" role="button" aria-label="Notes. Click to edit."></div>
+      <textarea id="d-notes" class="d-notes" placeholder="Add details, links, context…&#10;Markdown works: **bold**, - lists, [links](https://…)" hidden></textarea>
+
+      <div class="section-label">Activity</div>
+      <ol class="activity" id="d-activity"></ol>
+      <form class="comment-form" id="d-comment">
+        <input id="d-comment-text" placeholder="Leave a comment…" aria-label="Comment">
+        <button class="btn" type="submit">Post</button>
+      </form>
+
+      <div class="drawer-foot">
+        <button class="btn danger" id="d-delete" type="button">Delete task</button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
