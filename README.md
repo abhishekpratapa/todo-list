@@ -10,8 +10,15 @@ src/quickadd.js      one-line entry parser ("Renew passport fri !high #personal"
 public/              dashboard UI (vanilla HTML/CSS/JS); markdown.js renders notes safely
 src/store.js         shared JSON store with file locking (safe for many concurrent sessions)
 src/server.js        dashboard server (REST API + live updates); embedded in the app or run via `npm start`
+src/api-v1.js        /api/v1, the API for your other devices (see docs/openapi.json)
+src/auth.js          access token, session cookies, rate limits
+src/remote.js        remote-access state shared by the app and the server
+src/tailscale.js     reads Tailscale's state; sets up and removes the `tailscale serve` mapping
 src/mcp.js           MCP server (stdio) that Claude launches
 build/icon.png       app icon (regenerate with `npm run icon`)
+docs/openapi.json    API reference
+docs/SECURITY.md     what remote access protects, and what it doesn't
+test/                `npm test` (Node's built-in runner, no dependencies)
 ```
 
 ## Install
@@ -57,6 +64,72 @@ The prompt tells Claude to read the task with the todo tools, mark it in progres
 **Notifications.** You get a Mac notification when a Claude session comments on a task, finishes it, or marks it blocked (from any session, not only ones started here). Click it to open the task. They're skipped while the Todos window is in front, since the card flashes there. Turn them off with **Todos → Notify About Claude's Updates**.
 
 The app looks for the `claude` command in `~/.local/bin`, Homebrew's folders, and the Claude desktop app's own copy. Set `TODOS_CLAUDE_BIN` to use a specific one.
+
+## Using Todos from your other devices
+
+Todos can be opened from your phone or another computer on your Tailscale tailnet. The Mac stays the only copy of your list: other devices talk to it, they don't sync.
+
+This is off by default. While it's off, nothing here applies and the app behaves as it always has.
+
+### Turn it on
+
+1. On the Mac, choose **Todos → Remote Access → Allow Access from My Other Devices**.
+2. The app offers to set up Tailscale Serve. It shows the one command it will run (`tailscale serve --bg --https=443 http://127.0.0.1:7420`) and runs it only if you click **Set Up**. You can also do this later with **Remote Access → Set Up Tailscale Serve…**, or run the command yourself.
+3. The menu then shows the address, for example `On at your-mac.your-tailnet.ts.net`. **Copy Address** copies it.
+
+Requirements: Tailscale running on the Mac, and HTTPS certificates enabled for your tailnet (Tailscale admin console → DNS → HTTPS Certificates). If something's missing, the status line in the menu says what.
+
+### Sign in from a phone or another computer
+
+1. Make sure Tailscale is connected on that device.
+2. Open the address in a browser. You'll get a sign-in page.
+3. On the Mac, choose **Remote Access → Copy Access Token**, and enter it on the device (a password manager can hold it). You stay signed in on that device for 90 days.
+4. On a phone, use the browser's **Add to Home Screen** to get an app icon. The home-screen app has its own sign-in, so enter the token there once too.
+
+Everything works as it does on the Mac, including live updates, except **Start with Claude**, which only exists in the app on the Mac itself. Changes you make from another device show in a task's activity as "You · iPhone" (the device name comes from Tailscale).
+
+If you edit something on a device whose copy is out of date (for example a Claude session changed the task while your phone was offline), the edit is refused and the page shows the latest version instead of overwriting it.
+
+### Add tasks from an iOS Shortcut
+
+The quick-capture endpoint takes one line, read exactly as ⌃⌥T reads it.
+
+1. In Shortcuts, create a shortcut with **Ask for Input** (Text, prompt "New task"). Use **Dictate Text** instead if you'd rather speak it.
+2. Add **Get Contents of URL**:
+   - URL: `https://your-mac.your-tailnet.ts.net/api/v1/capture`
+   - Method: **POST**
+   - Headers: `Authorization` = `Bearer ` followed by your access token; `X-Todos-Client` = `iOS Shortcut`
+   - Request Body: **JSON**, with one field `text` set to the **Provided Input**
+3. Optionally add **Get Dictionary Value** for `task.title` and **Show Notification**, to confirm what was added.
+
+Then "Renew passport fri !high #personal" becomes a task due Friday, high priority, in project personal.
+
+The same from a terminal on another machine:
+
+```bash
+curl -sS https://your-mac.your-tailnet.ts.net/api/v1/capture \
+  -H "Authorization: Bearer $TODOS_TOKEN" -H "Content-Type: text/plain" \
+  -d "Call dentist tomorrow 3pm"
+```
+
+### The API
+
+`docs/openapi.json` documents every endpoint under `/api/v1`: tasks (list, filter, search, create, edit, complete, delete), subtasks, comments, history, quick capture, what's due, the daily summary, and live updates. Send the access token as `Authorization: Bearer …`.
+
+Edits and deletes must say which revision of the task they are based on (`If-Match: "3"`, from the task's `rev` or the `ETag` header). If the task has changed since, you get `409` with the current task and nothing is overwritten. Adding comments, adding or checking subtasks, and completing a task need no revision.
+
+The API only exists while remote access is on, and always needs the token, including from scripts on the Mac itself.
+
+### Managing access
+
+- **Rotate Access Token…** signs out every other device and script at once. Use it if a device is lost. (Signing out on a device only clears that device's cookie.)
+- **Only My Tailscale Account** (on by default) refuses devices signed in to Tailscale as anyone else, even with the token. Turn it off if you share the list with another account or use tagged devices.
+- Turning the setting off stops answering other devices immediately. The Tailscale Serve mapping stays until you choose **Remove Tailscale Serve Mapping…**, but it leads nowhere while the setting is off.
+- `docs/SECURITY.md` describes what is and isn't protected.
+
+### Keeping the Mac reachable
+
+Other devices can only reach Todos while the app is running and the Mac is awake and on Tailscale. Turn on **Todos → Launch at Login**, let Tailscale start at login, and keep the Mac from sleeping (System Settings → Energy; a display that sleeps is fine). When the Mac can't be reached, the page shows "Offline" and reconnects by itself; scripts and Shortcuts should treat a timeout as "try again later".
 
 ## Menu bar
 
@@ -154,6 +227,7 @@ Everything lives in `~/Library/Application Support/Todos/data/todos.json`, a pla
 npm install        # Electron + electron-builder (dev only)
 npm run app        # run the app from source
 npm start          # run just the dashboard server, then open http://127.0.0.1:7420
+npm test           # the test suite (uses its own temporary data folder)
 npm run dist       # build dist/Todos-<version>-arm64.dmg
 ```
 
@@ -162,9 +236,9 @@ npm run dist       # build dist/Todos-<version>-arm64.dmg
 | `TODO_DATA_FILE` | `~/Library/Application Support/Todos/data/todos.json` | Use a different data file (handy for testing) |
 | `TODO_PORT` | `7420` | Dashboard port. If it's taken, the app falls back to a free port. |
 
-### REST API
+### The dashboard's own routes
 
-The dashboard uses this API. It only listens on 127.0.0.1.
+The dashboard uses these. The server only listens on 127.0.0.1. For anything you write yourself, use `/api/v1` (above) instead: it is documented, versioned and checks for conflicts.
 
 ```
 GET    /api/todos          -> { todos, summary, version }

@@ -363,6 +363,21 @@ test('writes are rate limited per client', async () => {
   assert.equal((await s.tailnet('POST', '/api/parse', { body: { text: 'x' }, headers: { cookie: other } })).status, 200, 'another session has its own allowance');
 });
 
+test('live-update connections are capped', async () => {
+  const cookie = await s.signIn();
+  const open = [];
+  for (let i = 0; i < 32; i++) open.push(await s.stream(s.tailnet, '/api/v1/events', { cookie }));
+  assert.ok(open.every((live) => live.status === 200));
+  const extra = await s.stream(s.tailnet, '/api/v1/events', { cookie });
+  assert.equal(extra.status, 503);
+  for (const live of open) live.close();
+  // Once some close, new ones are accepted again.
+  await new Promise((r) => setTimeout(r, 100));
+  const again = await s.stream(s.tailnet, '/api/v1/events', { cookie });
+  assert.equal(again.status, 200);
+  again.close();
+});
+
 test('turning the setting off drops other devices at once', async () => {
   const cookie = await s.signIn();
   const live = await s.stream(s.tailnet, '/api/events', { cookie });
