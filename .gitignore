@@ -5,3 +5,18 @@ dist/
 # local test data never belongs in the repo
 /data/
 *.tmp
+
+# iPhone app: build output, and anything per-user or secret
+ios/build/
+ios/TodosKit/.build/
+ios/**/.swiftpm/
+xcuserdata/
+*.xcuserstate
+DerivedData/
+# signing material and keys never belong in the repo
+*.mobileprovision
+*.provisionprofile
+*.p8
+*.p12
+*.cer
+*.certSigningRequest

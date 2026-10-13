@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { boot, store } from './support/helpers.js';
 
 const { parseQuickAdd } = await import('../src/quickadd.js');
-const { createV1 } = await import('../src/api-v1.js');
+const { createV1, API_REVISION } = await import('../src/api-v1.js');
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 let s;
@@ -186,6 +186,27 @@ test('list, filter and search', async () => {
   }
 });
 
+test('meta says what the server speaks, so a client can check before relying on it', async () => {
+  const { version } = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
+  const res = await api('GET', '/meta');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { api: { version: 1, revision: API_REVISION }, app: { name: 'Todos', version } });
+  assert.ok(API_REVISION >= 2, 'revision 1 is Todos 1.4, which has no /meta');
+
+  // Unlike the health check, it needs the token.
+  assert.equal((await s.tailnet('GET', '/api/v1/meta')).status, 401);
+  assert.equal((await api('GET', '/meta', { headers: { authorization: 'Bearer wrong' } })).status, 401);
+});
+
+test('a list carries the version that live updates announce', async () => {
+  const before = (await api('GET', '/tasks')).body.version;
+  assert.equal(before, store.load().version);
+  await api('POST', '/tasks', { body: { title: 'One more change' } });
+  const after = await api('GET', '/tasks?status=done&limit=1');
+  assert.equal(after.body.version, before + 1, 'it is the whole list\'s version, whatever the filter');
+  assert.equal(after.body.version, store.load().version);
+});
+
 test('quick capture reads a line exactly as the app does', async () => {
   const lines = [
     'Renew passport fri !high #personal',
@@ -295,7 +316,7 @@ test('nothing that runs programs or reveals local paths exists in the API', asyn
   for (const p of [`/tasks/${task.id}/handoff`, '/handoff', '/settings', '/token', '/files']) {
     assert.equal((await api('POST', p, { body: {} })).status, 404, p);
   }
-  const everything = JSON.stringify([(await api('GET', '/tasks?status=all')).body, (await api('GET', '/summary')).body, (await api('GET', '/due')).body, (await api('GET', '/session')).body]);
+  const everything = JSON.stringify([(await api('GET', '/tasks?status=all')).body, (await api('GET', '/summary')).body, (await api('GET', '/due')).body, (await api('GET', '/session')).body, (await api('GET', '/meta')).body]);
   assert.equal(everything.includes(process.env.TODO_DATA_FILE), false, 'no data file path');
   assert.equal(everything.includes(s.remote.token), false, 'no token');
 });

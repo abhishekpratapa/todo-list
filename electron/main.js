@@ -17,6 +17,7 @@ import {
 import { COOKIE } from '../src/auth.js';
 import { createRemote } from '../src/remote.js';
 import * as tailscale from '../src/tailscale.js';
+import { showPairing } from './pairing.js';
 import { startInDesktop, startInTerminal, tildify } from './handoff.js';
 
 if (!app.requestSingleInstanceLock()) {
@@ -358,6 +359,7 @@ function remoteMenu() {
         ? { label: 'Remove Tailscale Serve Mapping…', click: removeServe }
         : { label: 'Set Up Tailscale Serve…', enabled: on, click: setUpServe },
       { type: 'separator' },
+      { label: 'Pair iPhone…', enabled: on && !!url, click: () => showPairing({ url, remote, dark: nativeTheme.shouldUseDarkColors, parent: win }) },
       { label: 'Copy Access Token', enabled: on, click: () => clipboard.writeText(remote.token) },
       { label: 'Show Access Token…', enabled: on, click: showToken },
       { label: 'Rotate Access Token…', enabled: on, click: rotateToken },

@@ -23,6 +23,7 @@ Because `tailscale serve` delivers everything from `127.0.0.1`, where a request 
 
 - The access token is 256 random bits, stored in `~/Library/Application Support/Todos/remote-access-token`, readable only by your user (mode 0600). It is created the first time it is needed. It is compared in constant time, and never written to a log or put in a URL.
 - A browser exchanges the token once for a session cookie: `HttpOnly` (page scripts can't read it), `SameSite=Strict`, `Secure` over HTTPS, valid 90 days. Cookies are signed with a key derived from the token and are not stored on the Mac.
+- **Pairing the iPhone app.** Remote Access → Pair iPhone… shows a QR code holding the address and the access token. The code is drawn inside the app and shown in a window of its own that runs no scripts and loads nothing. The HTTP server has no route that returns the code or the token. The window is excluded from screenshots, recordings and screen sharing, and closes after a minute or as soon as the token is rotated or remote access is switched off. The iPhone app keeps the token in the iOS Keychain (this device only, not synced).
 - **Rotating the token** invalidates every session and API client at once. This is the way to revoke a lost device. Signing out on a device only clears that device's cookie.
 - The Mac app's own windows use a separate cookie, signed with a key that exists only in the running app's memory. Nothing else can create one, and it is ignored on relayed requests.
 
@@ -39,6 +40,7 @@ Every task has a revision number that goes up with each change, whoever makes it
 ## What this does not protect against
 
 - **Anyone who has both the token and a device on your tailnet under your account** has full read and write access to your list, including delete. Treat the token like a password.
+- **Someone who photographs the pairing code** while it is on screen has the token. Rotate it if that might have happened.
 - **Other programs running as you on the Mac.** They can read the token file and the data file directly, as they always could read the data file. They can also send local requests with made-up Tailscale headers; those headers are used for the account check on relayed traffic and for labelling changes, and are not what grants access. The token is.
 - **Device labels are informational.** "You · iPhone" comes from Tailscale's record of the address; the `X-Todos-Client` label is whatever the client says.
 - **What you type into a task is shown on the Mac.** A task created remotely can carry a reminder time, which shows a notification on the Mac, and its title appears in the menu bar. Notes are rendered through a renderer that escapes HTML and only links to http, https and mailto addresses.

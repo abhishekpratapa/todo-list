@@ -12,13 +12,24 @@
 //     and the MCP server, and are recorded in the task's activity with the device
 //     or client that made them.
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { clearedCookie, sessionCookie } from './auth.js';
 import { RequestError, json, readJson, readJsonOrText } from './http.js';
 import { parseQuickAdd } from './quickadd.js';
 import {
-  ASSIGNEES, PRIORITIES, STATUSES, ConflictError, NotFoundError, TodoError,
+  ASSIGNEES, PRIORITIES, ROOT, STATUSES, ConflictError, NotFoundError, TodoError,
   createTodo, dailySummary, deleteTodo, dueGroups, getTodo, load, sortTodos, summarize, today, updateTodo, ymd,
 } from './store.js';
+
+// What GET /meta reports, so a client can check it is compatible before relying on
+// anything. Within v1 things are only ever added, never removed or changed, and
+// each addition raises the revision, so a client needs "version 1, revision N or later".
+//   1  Todos 1.4. Has no /meta: a 404 there means revision 1.
+//   2  Todos 1.5. GET /meta; `version` in GET /tasks.
+export const API_VERSION = 1;
+export const API_REVISION = 2;
+const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 const EDITABLE = ['title', 'notes', 'status', 'priority', 'due', 'project', 'tags', 'assignee', 'repeat', 'remindAt'];
 
@@ -105,7 +116,8 @@ function listTasks(q) {
     }
   };
 
-  const all = load().todos;
+  const db = load();
+  const all = db.todos;
   const matching = sortTodos(all.filter((t) =>
     statuses.includes(t.status)
     && (!priorities || priorities.includes(t.priority))
@@ -114,7 +126,8 @@ function listTasks(q) {
     && (!tag || t.tags.includes(tag))
     && dueOk(t)
     && words.every((w) => [t.title, t.notes, t.project || '', ...t.tags, ...t.subtasks.map((s) => s.title)].join('\n').toLowerCase().includes(w))));
-  return { tasks: matching.slice(offset, offset + limit).map(brief), total: matching.length, summary: summarize(all) };
+  // `version` is the list's version, the same number live updates announce.
+  return { tasks: matching.slice(offset, offset + limit).map(brief), total: matching.length, summary: summarize(all), version: db.version };
 }
 
 function subtaskOf(taskId, subtaskId) {
@@ -145,6 +158,8 @@ export function createV1({ remote, openStream, viaLabel }) {
       res.setHeader('Set-Cookie', clearedCookie({ secure: ctx.secure }));
       return json(res, 200, { ok: true });
     }],
+
+    ['GET', '/meta', ({ res }) => json(res, 200, { api: { version: API_VERSION, revision: API_REVISION }, app: { name: 'Todos', version: APP_VERSION } })],
 
     ['GET', '/events', ({ req, res, ctx }) => openStream(req, res, ctx)],
 

@@ -6,6 +6,9 @@ functions for smooth anti-aliasing.
   electron/assets/trayTemplate.png     18x18 menu bar icon (black + alpha "template" image,
   electron/assets/trayTemplate@2x.png  36x36  which macOS tints for light and dark menu bars)
   public/icons/icon-{180,192,512}.png  full-bleed icons for phone home screens
+  ios/Todos/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+                                       the iPhone app's icon: full-bleed, and with no alpha
+                                       channel, which the App Store does not accept
 """
 
 import math
@@ -129,12 +132,26 @@ def render_touch(size):
     return bytes(rows)
 
 
-def write_png(path, raw, size=SIZE):
+def without_alpha(raw, size):
+    """RGBA rows (each with its leading filter byte) to RGB rows."""
+    stride = 1 + size * 4
+    out = bytearray()
+    for y in range(size):
+        row = bytearray(raw[y * stride:(y + 1) * stride])
+        pixels = row[1:]
+        del pixels[3::4]
+        out += row[:1] + pixels
+    return bytes(out)
+
+
+def write_png(path, raw, size=SIZE, alpha=True):
     def chunk(tag, data):
         body = tag + data
         return struct.pack('>I', len(data)) + body + struct.pack('>I', zlib.crc32(body) & 0xFFFFFFFF)
 
-    ihdr = struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0)  # 8-bit RGBA
+    if not alpha:
+        raw = without_alpha(raw, size)
+    ihdr = struct.pack('>IIBBBBB', size, size, 8, 6 if alpha else 2, 0, 0, 0)  # 8-bit RGBA, or RGB
     png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b'')
     with open(path, 'wb') as f:
         f.write(png)
@@ -157,3 +174,8 @@ if __name__ == '__main__':
         out = os.path.join(root, 'build', 'icon.png')
         write_png(out, render())
         print('wrote', out)
+        ios = os.path.join(root, 'ios', 'Todos', 'Assets.xcassets', 'AppIcon.appiconset')
+        if os.path.isdir(ios):
+            out = os.path.join(ios, 'icon-1024.png')
+            write_png(out, render_touch(1024), 1024, alpha=False)
+            print('wrote', out)

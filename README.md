@@ -6,6 +6,7 @@ A Mac app for a todo list shared between you and your Claude sessions. You manag
 electron/main.js     app shell: window, menus, Dock badge, menu bar item, quick capture, reminders
 electron/capture-preload.cjs   bridge for the quick-capture panel
 electron/handoff.js  "Start with Claude": opens a Claude session on a task
+electron/pairing.js  the "Pair iPhone" window
 src/quickadd.js      one-line entry parser ("Renew passport fri !high #personal")
 public/              dashboard UI (vanilla HTML/CSS/JS); markdown.js renders notes safely
 src/store.js         shared JSON store with file locking (safe for many concurrent sessions)
@@ -14,11 +15,14 @@ src/api-v1.js        /api/v1, the API for your other devices (see docs/openapi.j
 src/auth.js          access token, session cookies, rate limits
 src/remote.js        remote-access state shared by the app and the server
 src/tailscale.js     reads Tailscale's state; sets up and removes the `tailscale serve` mapping
+src/pairing.js       what the "Pair iPhone" QR code says, and the page that shows it
+src/qr.js            QR code generator (no dependencies)
 src/mcp.js           MCP server (stdio) that Claude launches
 build/icon.png       app icon (regenerate with `npm run icon`)
 docs/openapi.json    API reference
 docs/SECURITY.md     what remote access protects, and what it doesn't
 test/                `npm test` (Node's built-in runner, no dependencies)
+ios/                 the iPhone app (see ios/README.md)
 ```
 
 ## Install
@@ -90,6 +94,12 @@ Everything works as it does on the Mac, including live updates, except **Start w
 
 If you edit something on a device whose copy is out of date (for example a Claude session changed the task while your phone was offline), the edit is refused and the page shows the latest version instead of overwriting it.
 
+### The iPhone app
+
+There is a native iPhone app in `ios/`. `ios/README.md` covers building and installing it. It needs Todos 1.5 or later on the Mac.
+
+To connect it, choose **Remote Access → Pair iPhone…** on the Mac and scan the code with the app. The code holds the address and the access token, so the window shows it for a minute only and is left out of screenshots and screen sharing. You can also type the address and token into the app instead.
+
 ### Add tasks from an iOS Shortcut
 
 The quick-capture endpoint takes one line, read exactly as ⌃⌥T reads it.
@@ -115,6 +125,8 @@ curl -sS https://your-mac.your-tailnet.ts.net/api/v1/capture \
 ### The API
 
 `docs/openapi.json` documents every endpoint under `/api/v1`: tasks (list, filter, search, create, edit, complete, delete), subtasks, comments, history, quick capture, what's due, the daily summary, and live updates. Send the access token as `Authorization: Bearer …`.
+
+`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2.
 
 Edits and deletes must say which revision of the task they are based on (`If-Match: "3"`, from the task's `rev` or the `ETag` header). If the task has changed since, you get `409` with the current task and nothing is overwritten. Adding comments, adding or checking subtasks, and completing a task need no revision.
 
@@ -228,6 +240,8 @@ npm install        # Electron + electron-builder (dev only)
 npm run app        # run the app from source
 npm start          # run just the dashboard server, then open http://127.0.0.1:7420
 npm test           # the test suite (uses its own temporary data folder)
+ios/scripts/test.sh     # the iPhone app's tests (see ios/README.md)
+ios/scripts/install.sh  # build the iPhone app and install it on a connected iPhone
 npm run dist       # build dist/Todos-<version>-arm64.dmg
 ```
 

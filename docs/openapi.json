@@ -3,7 +3,7 @@
   "info": {
     "title": "Todos API",
     "version": "1",
-    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible in the app on the Mac itself.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
+    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible in the app on the Mac itself.\n\n**Compatibility.** `GET /meta` reports the API version and revision. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
   },
   "servers": [
     {
@@ -275,6 +275,74 @@
         }
       }
     },
+    "/meta": {
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "What does this server speak?",
+        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`.",
+        "responses": {
+          "200": {
+            "description": "The API version and revision, and the app that is serving it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "api": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "integer",
+                          "description": "Always 1 under /api/v1."
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "description": "Goes up whenever something is added."
+                        }
+                      }
+                    },
+                    "app": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string",
+                          "description": "The Todos app version, e.g. \"1.5.0\"."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/events": {
       "get": {
         "tags": [
@@ -431,6 +499,10 @@
                     },
                     "summary": {
                       "$ref": "#/components/schemas/Counts"
+                    },
+                    "version": {
+                      "type": "integer",
+                      "description": "The version of the whole list when this was read: the same number live updates announce. Added in revision 2."
                     }
                   }
                 }
