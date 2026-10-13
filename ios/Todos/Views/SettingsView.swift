@@ -10,6 +10,20 @@ struct SettingsView: View {
     @State private var retrying = false
     @State private var remindersOn = Reminders.shared.isEnabled
     @State private var remindersRefused = false
+    @State private var habitRemindersOn = Reminders.shared.habitsEnabled
+    @State private var notificationsAllowed = true
+
+    /// How habit reminders stand: on and how far ahead they reach, or why they can't be shown.
+    private var habitReminderStatus: String {
+        guard habitRemindersOn else { return "Habit reminders are off on this iPhone." }
+        guard notificationsAllowed else { return "Notifications are turned off for Todos on this iPhone, so habit reminders can’t be shown." }
+        let basics = "At each habit’s reminder time, with Done and Snooze buttons. They are scheduled on this iPhone, so they arrive even when your Mac is asleep."
+        guard let plan = Reminders.shared.plan, let through = plan.habitsCoveredThrough else { return basics }
+        var reach = " Scheduled through \(through.date().formatted(.dateTime.weekday(.wide).month().day())); opening Todos, or answering a reminder, schedules more."
+        if plan.isShort { reach = " There are more reminders than iOS will keep at once: only the nearest are scheduled, and Todos must be opened each day to keep them coming." }
+        if plan.withoutNudges { reach += " Second reminders are left out to make room." }
+        return basics + reach
+    }
 
     var body: some View {
         NavigationStack {
@@ -78,7 +92,7 @@ struct SettingsView: View {
                     Toggle("Reminders on This iPhone", isOn: $remindersOn)
                         .onChange(of: remindersOn) { _, on in
                             Task {
-                                let accepted = await Reminders.shared.setEnabled(on, tasks: model.tasks)
+                                let accepted = await Reminders.shared.setEnabled(on, tasks: model.tasks, habits: model.habits)
                                 remindersRefused = on && !accepted
                                 if !accepted { remindersOn = false }
                             }
@@ -94,6 +108,25 @@ struct SettingsView: View {
                     Text(remindersRefused
                         ? "Notifications are turned off for Todos on this iPhone, so reminders can’t be shown."
                         : "Reminders are scheduled on this iPhone from your list, so they arrive even when your Mac is asleep. To be reminded only once, turn off Reminder Notifications on This Mac in the Todos menu on your Mac.")
+                }
+
+                if model.habitsSupported == true {
+                    Section {
+                        Toggle("Habit Reminders on This iPhone", isOn: $habitRemindersOn)
+                            .onChange(of: habitRemindersOn) { _, on in
+                                Task { notificationsAllowed = await Reminders.shared.setHabitsEnabled(on, tasks: model.tasks, habits: model.habits) }
+                            }
+                        if habitRemindersOn, !notificationsAllowed {
+                            Button("Allow Notifications in Settings…") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                            }
+                        }
+                    } header: {
+                        Text("Habits")
+                    } footer: {
+                        Text(habitReminderStatus)
+                    }
+                    .task { notificationsAllowed = await Reminders.shared.isAllowed() || !habitRemindersOn }
                 }
 
                 Section {

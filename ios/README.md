@@ -115,11 +115,26 @@ The **Habits** tab is for routines you check in on: brushing your teeth morning 
 
 ### Reminders on the iPhone
 
-Turn on **Settings → Reminders on This iPhone** in the app (the gear at the top left) and allow notifications when iOS asks. From then on, every reminder in your list is scheduled on the iPhone itself, so it arrives even when your Mac is asleep or out of reach. Tapping one opens its task.
+Reminders are local notifications scheduled on the iPhone itself, from what the phone has, so they arrive even when your Mac is asleep or out of reach.
 
-- Reminders are scheduled from the list the iPhone has. One set on the Mac reaches the phone the next time the app updates: at once if the app is open, otherwise when iOS next gives it a background refresh (iOS decides when; opening the app always does it).
+**For tasks,** turn on **Settings → Reminders on This iPhone** (the gear at the top left) and allow notifications when iOS asks. Tapping one opens its task.
+
+- A reminder set on the Mac reaches the phone the next time the app updates: at once if the app is open, otherwise when iOS next gives it a background refresh (iOS decides when; opening the app always does it).
 - To be reminded only once, turn off **Todos → Reminder Notifications on This Mac** on the Mac. Each device has its own switch, so you choose where reminders appear.
-- iOS keeps at most 64 pending notifications for an app, so the 60 soonest are scheduled and the rest follow as those fire.
+
+**For habits,** reminders are on unless you turn off **Settings → Habit Reminders on This iPhone**; the phone is where they are meant to come from. iOS asks for permission the first time there is a habit with a reminder time.
+
+- **When.** At each time of day's reminder time, and again at its second reminder time if it still isn't done. For a habit counted in weeks, on its reminder days until the week is met. Times are local wherever you are: 7:30 is 7:30 at home and abroad.
+- **Done** on the notification checks in without opening the app. It goes through the same queue as a check-in made in the app, so it is kept if the Mac can't be reached and sent later. **Snooze 15 min** brings the same reminder back in a quarter of an hour. Tapping the notification itself opens the habit.
+- **Checking in early cancels the reminder** for that time of day, its second reminder, and anything about it already on screen or snoozed. A check-in made on the Mac or with the `todos` command cancels the phone's reminder only once the phone has heard of it: at once if the app is open, otherwise at its next background refresh.
+- Yesterday's reminder still works the next day (it logs yesterday, late). One from further back says it is too late.
+
+**How they fit in what iOS allows.** iOS keeps at most 64 waiting notifications for an app and silently forgets the rest, so reminders can't all be scheduled forever ahead. Instead the nearest are, and the schedule is laid out again every time the app runs: when you open it, when iOS wakes it to refresh, after every check-in, and after every Done or Snooze.
+
+- One place is for a notice, and three are kept for snoozes. Task reminders have first call on 24 of the rest and habits use the others; either side may use what the other leaves. With no habits, tasks have the 60 they always had.
+- Reminders are scheduled soonest first, so what is left out is always the furthest away. Two habits done twice a day reach about a week and a half ahead.
+- **Never silently.** The first reminder that did not fit is replaced, at its time, by a notice saying that reminders stop there until Todos is opened. Settings shows the date habit reminders are scheduled through.
+- If there are so many that today's and tomorrow's don't all fit, second reminders are left out before any first reminder is, and Settings says so.
 
 ### Widget
 

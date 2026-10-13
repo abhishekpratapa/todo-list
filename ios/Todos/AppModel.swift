@@ -92,9 +92,9 @@ final class AppModel {
         self.dataDirectory = dataDirectory
     }
 
-    /// Called whenever what is on screen has been worked out afresh, with the tasks as shown.
-    /// The app uses it to reschedule reminders and refresh the widget.
-    @ObservationIgnored var didReload: (@MainActor ([TodoTask]) async -> Void)?
+    /// Called whenever what is on screen has been worked out afresh, with the tasks and
+    /// habits as shown. The app uses it to reschedule reminders and refresh the widgets.
+    @ObservationIgnored var didReload: (@MainActor ([TodoTask], [Habit]) async -> Void)?
 
     // MARK: Pairing
 
@@ -182,7 +182,7 @@ final class AppModel {
         query = TaskQuery()
         compatibilityChecked = false
         phase = .unpaired
-        await didReload?([])
+        await didReload?([], [])
     }
 
     // MARK: Connection
@@ -391,7 +391,7 @@ final class AppModel {
         habitsSupported = cachedHabits.supported
         lastSynced = list.syncedAt
         hasLoaded = list.syncedAt != nil
-        await didReload?(tasks)
+        await didReload?(tasks, habits)
     }
 
     // MARK: Habits
@@ -476,6 +476,26 @@ final class AppModel {
 
     func undoSkip(_ habit: Habit, yesterday: Bool = false) async {
         await make(.undoSkip(habit: habit.id, name: habit.name, day: day(of: habit, yesterday: yesterday), at: Date(), zone: TimeZone.current.identifier))
+    }
+
+    enum OutsideCheckIn: Equatable {
+        case checkedIn, alreadyDone, tooLate, notFound, notPaired
+    }
+
+    /// A check-in from outside the app: the Done button on a reminder, a widget, a Shortcut.
+    /// It goes through the same queue as one made in the app, so it is saved at once and
+    /// waits if the Mac can't be reached. `day` is the habit day it is for; today, if nil.
+    func checkInFromOutside(habit id: Int, slot: String?, day: Day? = nil, source: HabitSource) async -> OutsideCheckIn {
+        await start()
+        guard phase == .paired, let store else { return .notPaired }
+        await store.reloadChanges() // a widget may have added some while the app was away
+        await reload()
+        guard let habit = habit(id) else { return .notFound }
+        let day = day ?? habit.today.day
+        guard day == habit.today.day || day == habit.yesterday.day else { return .tooLate }
+        guard habit.isOpen(slot: slot, on: day) else { return .alreadyDone }
+        await checkIn(habit, slot: slot, yesterday: day != habit.today.day, source: source)
+        return .checkedIn
     }
 
     /// True while a change to this habit is waiting to be sent.

@@ -221,6 +221,10 @@ Habits are in the API from revision 5 (`/api/v1/habits`, in [`docs/openapi.json`
 
 Check-ins are only ever added. If your phone and the `todos` command both check in the same slot, not knowing about each other, both are kept in the history and the slot counts once. Undoing names the check-ins it takes back, so an undo that arrives late from a phone that was offline can't remove a check-in made somewhere else in the meantime. A check-in sent late says when it was really made and is judged as of then: one made on Monday and delivered on Thursday is Monday's.
 
+### Reminders
+
+Habit reminders come from the iPhone: a notification at each time of day's reminder time with **Done** and **Snooze** buttons, a second reminder if it still isn't done, and no reminder at all once you have checked in. How they are scheduled within what iOS allows is in the [iPhone README](ios/README.md#reminders-on-the-iphone).
+
 ### Travel and clock changes
 
 A check-in counts for the date where it was made. Fly east over the date line and the same date comes round twice: it counts once. Fly west and a date is cut short: skip it. "Today" follows the time zone your devices last reported, so every client agrees on the day. Because days are dates and not 24-hour stretches, the spring and autumn clock changes don't affect anything.

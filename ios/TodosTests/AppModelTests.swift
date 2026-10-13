@@ -398,7 +398,7 @@ struct AppModelTests {
         mac.add("Call back") { $0.remindAt = Date().addingTimeInterval(3600) }
         let model = launch()
         var handed: [[TodoTask]] = []
-        model.didReload = { handed.append($0) }
+        model.didReload = { tasks, _ in handed.append(tasks) }
         #expect(await model.pair(credentials) == nil)
         #expect(handed.last?.map(\.title) == ["Call back"])
         #expect(ReminderPlan.plan(for: handed.last ?? []).map(\.title) == ["Call back"])

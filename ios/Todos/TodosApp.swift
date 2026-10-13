@@ -42,8 +42,8 @@ extension AppModel {
     static let shared: AppModel = {
         let model = forLaunch()
         // Whenever what is on screen changes, so do the reminders to schedule and what the widget shows.
-        model.didReload = { tasks in
-            await Reminders.shared.reschedule(for: tasks)
+        model.didReload = { tasks, habits in
+            await Reminders.shared.reschedule(tasks: tasks, habits: habits)
             WidgetCenter.shared.reloadAllTimelines()
         }
         return model

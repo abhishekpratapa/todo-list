@@ -30,6 +30,8 @@ struct HabitsView: View {
                 }
         }
         .sheet(item: $adding) { HabitEditorView(draft: $0) }
+        // Habits with reminder times need iOS's leave to remind. Asked once, when there are some.
+        .task(id: model.habits.map(\.id)) { await Reminders.shared.askForHabits(model.habits, tasks: model.tasks) }
         // A new day can begin while this is on screen.
         .task {
             while !Task.isCancelled {
