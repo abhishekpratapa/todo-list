@@ -1,6 +1,6 @@
-# Remote access: what is protected, and what isn't
+# Remote access and the local socket: what is protected, and what isn't
 
-Todos keeps your list in one file on your Mac. Remote access lets your other devices reach the app over your Tailscale tailnet. This note describes the design and its limits. The behaviour described here is covered by the tests in `test/`.
+Todos keeps your list in one file on your Mac. Remote access lets your other devices reach the app over your Tailscale tailnet. The local socket lets the `todos` command reach it on the Mac itself. This note describes the design of both and their limits. The behaviour described here is covered by the tests in `test/`.
 
 ## How it is exposed
 
@@ -15,7 +15,7 @@ Because `tailscale serve` delivers everything from `127.0.0.1`, where a request 
 
 1. **Host.** It must be `127.0.0.1`/`localhost` for a direct request, or this Mac's tailnet name for a relayed one. This blocks DNS rebinding.
 2. **Tailscale account** (optional, on by default). A relayed request must come from the Mac owner's own Tailscale account. Tailscale sets this header itself and overwrites anything a client sends. If the owner can't be determined, relayed requests are refused.
-3. **Authentication.** A bearer token, or a session cookie obtained by signing in with the token. Only the health check (which says `{"status":"ok"}` and nothing else), the sign-in page and its assets work without it.
+3. **Authentication.** A bearer token, or a session cookie obtained by signing in with the token. Only the health checks, the sign-in page and its assets work without it. `/api/v1/health` says `{"status":"ok"}` and nothing else. `/health` adds the app's version and the API's version, and nothing about the list (see below).
 4. **Origin.** A request that changes anything must come from the app's own origin. There are no CORS headers, so other websites can't call the API, and the cookie is `SameSite=Strict`, so they can't ride on your session.
 5. **Limits.** Bodies up to 256 KB, 120 changes a minute per client, 10 wrong tokens per 5 minutes per client, at most 32 live-update connections, and time limits on receiving a request.
 
@@ -30,9 +30,39 @@ Because `tailscale serve` delivers everything from `127.0.0.1`, where a request 
 
 ## What other devices cannot do
 
-- **Start a Claude session**, or anything else that runs a program on the Mac. That route answers only the app's own windows. It is refused for every other session, including a browser on the Mac that signed in with the token.
-- **See local paths**: the data file's location and the folders used for Start with Claude are only shown to the app's own windows.
+- **Start a Claude session**, or anything else that runs a program on the Mac. The button's route answers only the app's own windows. It is refused for every other session, including a browser on the Mac that signed in with the token. What the `todos` command uses for the same thing is not served on the port at all (see the next section).
+- **See local paths**: the data file's location and the folders used for Start with Claude are only shown to the app's own windows, and on the local socket.
 - The API has no endpoint that reads files, changes settings, or returns the token.
+
+## The local socket and the `todos` command
+
+While the app runs, its server also listens on a Unix domain socket: `~/Library/Application Support/Todos/todos.sock` (or `~/.todos/todos.sock` when a long home folder would push that path past the 103 bytes a socket's path may have). The `todos` command on the Mac talks to the app through it.
+
+**Who can use it.** Programs running as you, and nobody else. There is no token on the socket: being able to open the file is the authentication.
+
+- The file is created with mode 0600. The permissions are tightened before the file exists, not after, so there is no moment when anyone else could open it.
+- It lives in a folder only you can write to. The app refuses to put it in a folder other users can change, where they could swap it for a socket of their own.
+- This is the trust the list has always had. A program running as you could already read and change `todos.json` directly.
+
+**It cannot be reached from the network.** A Unix socket has no network address. `tailscale serve` relays to `127.0.0.1:7420`, never to the socket. As a second line, any request on the socket that carries a proxy's headers (`X-Forwarded-*`, `Forwarded`, `Tailscale-*`) is refused, so even if a proxy were pointed at the socket file, what it relays would get nothing.
+
+**It cannot be reached from a web page.** Browsers can't open Unix sockets, so the Host and Origin checks the port needs have nothing to guard against here.
+
+**What it serves.** The health check and `/api/v1`, and nothing else: no dashboard pages, none of the dashboard's own routes, no sign-in. The same store, the same file lock and the same conflict rules apply. Changes made through it are labelled "command line" in a task's activity.
+
+**Local-only operations.** Two routes exist only on the socket: `GET` and `POST /api/v1/tasks/{id}/claude-session`, which the `todos` command uses to start a Claude session on a task.
+
+- The first returns what the app's own Start with Claude button would use: the prompt, the folder remembered for the task's project, the options for `claude`, and where `claude` is on this Mac. The second records that a session was started, and remembers the folder.
+- Neither runs anything. The command runs `claude` itself, as you, in your own terminal, exactly as if you had typed it.
+- On the port they are answered exactly like a path that does not exist, to every caller: signed in or not, on the Mac or relayed by `tailscale serve`, with remote access on or off. The server decides this by which listener a request arrived on, not by anything in the request, so no header can change it.
+
+**Starting and stopping.** On startup, a socket file left by a copy of the app that did not exit cleanly is replaced, but only after checking that nothing answers on it. One that still answers belongs to a running copy and is left alone. Anything at that path that is not a socket is never removed. Quitting the app removes the file.
+
+**The health check.** `GET /health` answers without sign-in, on the socket and on the port: `status`, the app's version and the API's version, and nothing about your list. The port's other rules still come first. While remote access is off, nothing relayed is answered, the health check included. While it is on, the Host, the Tailscale account and Funnel are checked before it. So a device that gets past those can learn which version of Todos you run without having the token. Before, it could only learn that something answered.
+
+**Starting the app in the background.** `open -g -a Todos --args --background` starts the app with no window. It grants nothing: it is the same app, started by you. Over SSH it only works while you are logged in to the Mac's desktop.
+
+**Install Command Line Tool.** This makes one symbolic link, `~/.local/bin/todos`, pointing at the copy of the command inside the app. It is done as you: no password is asked for and nothing runs as root. It never replaces or removes anything it did not put there. To tell you whether a terminal will find the command, the app asks your own login shell, which runs your shell's startup files as opening a terminal does; it never edits them. The command inside the app is signed the same way the app is (ad hoc, not notarized).
 
 ## Conflicts
 
@@ -42,7 +72,8 @@ Every task has a revision number that goes up with each change, whoever makes it
 
 - **Anyone who has both the token and a device on your tailnet under your account** has full read and write access to your list, including delete. Treat the token like a password.
 - **Someone who photographs the pairing code** while it is on screen has the token. Rotate it if that might have happened.
-- **Other programs running as you on the Mac.** They can read the token file and the data file directly, as they always could read the data file. They can also send local requests with made-up Tailscale headers; those headers are used for the account check on relayed traffic and for labelling changes, and are not what grants access. The token is.
+- **Other programs running as you on the Mac.** They can read the token file and the data file directly, as they always could read the data file. They can use the local socket, which asks for no token, and so can see where Start with Claude's folders are. They can also send local requests with made-up Tailscale headers; those headers are used for the account check on relayed traffic and for labelling changes, and are not what grants access. The token is.
+- **Other accounts on the Mac** cannot open the socket or read the data file. An administrator who can become you, or read any file, can do what you can.
 - **Device labels are informational.** "You · iPhone" comes from Tailscale's record of the address; the `X-Todos-Client` label is whatever the client says.
 - **What you type into a task is shown on the Mac.** A task created remotely can carry a reminder time, which shows a notification on the Mac, and its title appears in the menu bar. Notes are rendered through a renderer that escapes HTML and only links to http, https and mailto addresses.
 - **A session cookie stays valid until it expires or the token is rotated**, because sessions aren't stored server-side.

@@ -5,13 +5,16 @@ A Mac app for a todo list shared between you and your Claude sessions. You manag
 ```
 electron/main.js     app shell: window, menus, Dock badge, menu bar item, quick capture, reminders
 electron/capture-preload.cjs   bridge for the quick-capture panel
-electron/handoff.js  "Start with Claude": opens a Claude session on a task
+electron/handoff.js  "Start with Claude": chooses the folder and opens a Claude session on a task
 electron/pairing.js  the "Pair iPhone" window
+electron/cli-install.js  "Install Command Line Tool": the link to the `todos` command inside the app
 src/quickadd.js      one-line entry parser ("Renew passport fri !high #personal")
 public/              dashboard UI (vanilla HTML/CSS/JS); markdown.js renders notes safely
 src/store.js         shared JSON store with file locking (safe for many concurrent sessions)
 src/server.js        dashboard server (REST API + live updates); embedded in the app or run via `npm start`
-src/api-v1.js        /api/v1, the API for your other devices (see docs/openapi.json)
+src/api-v1.js        /api/v1, the API for your other devices and the `todos` command (see docs/openapi.json)
+src/socket.js        the local socket the `todos` command uses on this Mac
+src/claude-session.js  what a "Start with Claude" session is started with, for the app's button and the command
 src/auth.js          access token, session cookies, rate limits
 src/remote.js        remote-access state shared by the app and the server
 src/tailscale.js     reads Tailscale's state; sets up and removes the `tailscale serve` mapping
@@ -19,9 +22,11 @@ src/pairing.js       what the "Pair iPhone" QR code says, and the page that show
 src/qr.js            QR code generator (no dependencies)
 src/mcp.js           MCP server (stdio) that Claude launches
 build/icon.png       app icon (regenerate with `npm run icon`)
+scripts/build-cli.js builds the `todos` command into the app (part of `npm run dist`)
 docs/openapi.json    API reference
-docs/SECURITY.md     what remote access protects, and what it doesn't
-test/                `npm test` (Node's built-in runner, no dependencies)
+docs/SECURITY.md     what remote access and the local socket protect, and what they don't
+test/                `npm test` (Node's built-in runner, no dependencies); test/app/ runs the real app (`npm run test:app`)
+cli/                 the `todos` command-line client (Go)
 ios/                 the iPhone app (see ios/README.md)
 ```
 
@@ -68,6 +73,8 @@ The prompt tells Claude to read the task with the todo tools, mark it in progres
 **Notifications.** You get a Mac notification when a Claude session comments on a task, finishes it, or marks it blocked (from any session, not only ones started here). Click it to open the task. They're skipped while the Todos window is in front, since the card flashes there. Turn them off with **Todos → Notify About Claude's Updates**.
 
 The app looks for the `claude` command in `~/.local/bin`, Homebrew's folders, and the Claude desktop app's own copy. Set `TODOS_CLAUDE_BIN` to use a specific one.
+
+The `todos` command can start a session on a task from a terminal on the Mac. It asks the app for exactly what the button would use (the same prompt, the folder remembered for the project, the same options for `claude`) and runs `claude` itself, in the terminal you are in. The task is assigned to Claude and its activity says "Started with Claude from terminal". This only works on the Mac itself, not from another machine.
 
 ## Using Todos from your other devices
 
@@ -128,13 +135,13 @@ curl -sS https://your-mac.your-tailnet.ts.net/api/v1/capture \
 
 `docs/openapi.json` documents every endpoint under `/api/v1`: tasks (list, filter, search, create, edit, complete, delete), subtasks, comments, history, quick capture, what's due, the daily summary, and live updates. Send the access token as `Authorization: Bearer …`.
 
-`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3.
+`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3; the release with the `todos` command is revision 4 (`/info`, and the API on the local socket).
 
 Any change can carry an `Idempotency-Key` header (8 to 64 letters, digits, hyphens or underscores; a UUID works). Sending the same change again with the same key does nothing the second time and answers with the task as it is now, so a script or app can retry after a timeout without adding a task twice. `/capture` also takes an optional `at`, the moment a line was typed, for lines that reach the Mac later: "tomorrow" is then read from that moment.
 
 Edits and deletes must say which revision of the task they are based on (`If-Match: "3"`, from the task's `rev` or the `ETag` header). If the task has changed since, you get `409` with the current task and nothing is overwritten. Adding comments, adding or checking subtasks, and completing a task need no revision.
 
-The API only exists while remote access is on, and always needs the token, including from scripts on the Mac itself.
+At the network address and on port 7420, the API only exists while remote access is on, and always needs the token, including from scripts on the Mac itself. On the Mac's local socket (see [The `todos` command](#the-todos-command)) it is always there and needs no token. A few routes exist only on the socket: the ones behind `todos` starting a Claude session.
 
 ### Managing access
 
@@ -146,6 +153,40 @@ The API only exists while remote access is on, and always needs the token, inclu
 ### Keeping the Mac reachable
 
 Other devices can only reach Todos while the app is running and the Mac is awake and on Tailscale. Turn on **Todos → Launch at Login**, let Tailscale start at login, and keep the Mac from sleeping (System Settings → Energy; a display that sleeps is fine). When the Mac can't be reached, the page shows "Offline" and reconnects by itself; scripts and Shortcuts should treat a timeout as "try again later".
+
+## The `todos` command
+
+The app carries a command-line client, `todos`, inside its bundle (`Todos.app/Contents/Resources/bin/todos`).
+
+### Install it
+
+Choose **Todos → Install Command Line Tool**. This links `~/.local/bin/todos` to the copy inside the app, so the command is always the one that came with the app you have installed. It needs no password. If `~/.local/bin` isn't on your PATH, the app says so and shows the one line to add; it never edits your shell's files itself. **Uninstall Command Line Tool** removes the link. Neither will touch a `todos` that something else put there. If you move the app, choose Install again.
+
+### On this Mac
+
+The command talks to the running app through a local socket, `~/Library/Application Support/Todos/todos.sock`, which only your user can open. It needs no access token and works whether or not remote access is on. (A socket's path can be at most 103 bytes. If your home folder's path is long enough to push it past that, the socket goes to `~/.todos/todos.sock` instead.)
+
+If the app isn't running, the command can start it for you, with:
+
+```bash
+open -g -a Todos --args --background
+```
+
+Started this way, the server, the menu bar item, reminders and notifications all run, but no window opens and whatever app you were in stays in front. If the app is already running, nothing visible happens. Opening Todos in the usual way afterwards shows its window.
+
+### From another machine
+
+On a machine that only has the command, it reaches the Mac the way your phone does: remote access on, the address from **Remote Access → Copy Address**, and the access token from **Copy Access Token**. Everything works except starting a Claude session, which only exists on the Mac.
+
+The command may also start the app on the Mac over SSH (`ssh your-mac open -g -a Todos --args --background`). macOS only lets that work **while you are logged in to the Mac's desktop**: a Mac sitting at the login window, or one you have logged out of, has nowhere to open an app, and `open` fails. For a Mac you want reachable after a restart, log in automatically and turn on **Todos → Launch at Login**.
+
+### Is the app there?
+
+`GET /health` answers `{"status":"ok","appVersion":"…","apiVersion":{"version":1,"revision":4}}` as soon as the server is ready, on the socket and on the port, with no sign-in. It says nothing about your list. `GET /api/v1/info` adds `minClientVersions`, the oldest version of each client (`cli`, `ios`) that still works with this app.
+
+```bash
+curl --unix-socket ~/Library/Application\ Support/Todos/todos.sock http://todos/health
+```
 
 ## Menu bar
 
@@ -170,6 +211,7 @@ The check icon in the menu bar shows how many tasks are overdue or due today. Cl
   - **Todos → Reminder Notifications on This Mac**
   - **Todos → Daily Summary at 9 AM**
   - **Todos → Send Test Notification**: use this to check that macOS is allowing notifications from Todos. If nothing appears, allow them in System Settings → Notifications → Todos. Reminders also show as a banner inside the app window either way.
+  - **Todos → Install Command Line Tool** and **Uninstall Command Line Tool**: see [The `todos` command](#the-todos-command).
   - **File → Open in Browser**: the dashboard is also at http://127.0.0.1:7420 while the app runs.
   - **File → Show Data File in Finder**
   - **File → Copy Claude Code Setup Command**
@@ -245,15 +287,24 @@ npm install        # Electron + electron-builder (dev only)
 npm run app        # run the app from source
 npm start          # run just the dashboard server, then open http://127.0.0.1:7420
 npm test           # the test suite (uses its own temporary data folder)
+npm run test:app   # tests that run the real app, in the background, as a separate copy on port 7441
 ios/scripts/test.sh     # the iPhone app's tests (see ios/README.md)
 ios/scripts/install.sh  # build the iPhone app and install it on a connected iPhone
-npm run dist       # build dist/Todos-<version>-arm64.dmg
+npm run dist       # build the todos command (needs Go), then dist/Todos-<version>-arm64.dmg
 ```
+
+`npm run dist` first runs `cli/build.sh` and puts its result in the app bundle. It stops with a message if Go isn't installed or the build produces anything other than a macOS arm64 program.
+
+`npm run test:app` starts a copy of the app with its own settings, data, socket and port, so it can run while the installed app is open. It shows an icon in the Dock for a few seconds, and one test brings the copy to the front on purpose. If the app has been packaged in this checkout, the packaged copy is tested too.
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `TODO_DATA_FILE` | `~/Library/Application Support/Todos/data/todos.json` | Use a different data file (handy for testing) |
 | `TODO_PORT` | `7420` | Dashboard port. If it's taken, the app falls back to a free port. |
+| `TODOS_SOCKET` | `~/Library/Application Support/Todos/todos.sock` | Where the local socket goes. The path must be 103 bytes or shorter. `npm start` only opens a socket when this is set. |
+| `TODOS_USER_DATA` | `~/Library/Application Support/Todos` | The app's settings folder. Give a second copy of the app its own, or it will find the first one running and hand over to it. |
+| `TODOS_BIN_DIR` | `~/.local/bin` | Where Install Command Line Tool puts the link. |
+| `TODOS_CLI_DIR` | `cli` | The command-line client that `npm run dist` builds into the app. |
 
 ### The dashboard's own routes
 
