@@ -16,7 +16,7 @@
     "test:app": "node --test --test-concurrency=1 \"test/app/*.test.js\"",
     "app": "electron .",
     "icon": "python3 scripts/make-icon.py",
-    "dist": "electron-builder --mac"
+    "dist": "node scripts/build-cli.js && electron-builder --mac"
   },
   "devDependencies": {
     "electron": "^44.5.1",
@@ -33,6 +33,12 @@
       "package.json"
     ],
     "asar": false,
+    "extraResources": [
+      {
+        "from": "build/bin/todos",
+        "to": "bin/todos"
+      }
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "build"

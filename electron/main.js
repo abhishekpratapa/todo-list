@@ -20,6 +20,8 @@ import { socketPath } from '../src/socket.js';
 import * as tailscale from '../src/tailscale.js';
 import { showPairing } from './pairing.js';
 import { createHandoff } from './handoff.js';
+import { bundledCli, cliLink, install as linkCli, linkState, resolvedByShell, uninstall as unlinkCli } from './cli-install.js';
+import { tildify } from '../src/claude-session.js';
 
 // TODOS_USER_DATA keeps a second copy (one run from source, or by the tests) apart
 // from the installed app: its own settings, and its own "already running" lock,
@@ -213,7 +215,15 @@ const NO_REMOTE_INFO = { tailscale: null, mapped: false, funnel: false, url: nul
 let remoteInfo = NO_REMOTE_INFO;
 
 const remoteAddress = (dnsName, httpsPort) => `https://${dnsName}${httpsPort === 443 ? '' : `:${httpsPort}`}`;
-const box = (options) => (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+// With TODOS_DEBUG_DIALOGS set (the app's own tests do), a dialog is written to
+// the log and answered with its default button instead of being shown.
+function box(options) {
+  if (process.env.TODOS_DEBUG_DIALOGS) {
+    console.log(`dialog: ${JSON.stringify({ message: options.message, detail: options.detail, buttons: options.buttons })}`);
+    return Promise.resolve({ response: options.defaultId ?? 0 });
+  }
+  return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options);
+}
 const tell = (message, detail) => box({ type: 'info', buttons: ['OK'], message, detail });
 
 // The app's own windows get a session cookie signed with a key only this process
@@ -382,6 +392,96 @@ function remoteMenu() {
       },
     ],
   };
+}
+
+// ---------- command line tool ----------
+
+// The `todos` command ships inside the app. "Install Command Line Tool" links it
+// into a folder on the PATH, and "Uninstall" removes that link (see cli-install.js).
+const cliPaths = () => ({ link: cliLink(), binary: bundledCli({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, root: ROOT }) });
+
+function cliState() {
+  const { link, binary } = cliPaths();
+  try {
+    return linkState(link, binary);
+  } catch {
+    return 'foreign'; // can't even look at it: not ours to touch
+  }
+}
+
+// The line that puts `dir` on the PATH, and the file a login shell reads it from.
+function pathAdvice(dir) {
+  const home = app.getPath('home');
+  const entry = dir.startsWith(`${home}/`) ? `$HOME${dir.slice(home.length)}` : dir;
+  const shell = path.basename(process.env.SHELL || 'zsh');
+  const file = { zsh: '~/.zprofile', bash: '~/.bash_profile' }[shell] || 'your shell’s startup file';
+  return { line: `export PATH="${entry}:$PATH"`, file };
+}
+
+async function installCommandLineTool() {
+  const { link, binary } = cliPaths();
+  try {
+    linkCli(link, binary);
+  } catch (e) {
+    const detail = e.code === 'in_the_way'
+      ? `${tildify(link)} already exists and wasn’t put there by Todos, so it has been left alone. Move or remove it, then choose Install Command Line Tool again.`
+      : e.message;
+    return box({ type: 'warning', buttons: ['OK'], message: 'The todos command was not installed', detail });
+  }
+  buildMenu();
+  debug('command line tool: installed');
+
+  // Would a new terminal window find it? Ask the user's own shell.
+  const found = await resolvedByShell();
+  const installed = `${tildify(link)} now runs the copy of the command inside Todos.`;
+  if (found === null) {
+    const { line, file } = pathAdvice(path.dirname(link));
+    const { response } = await box({
+      type: 'info',
+      buttons: ['Copy Line', 'OK'],
+      defaultId: 1,
+      message: 'The todos command is installed',
+      detail: `${installed}\n\n${tildify(path.dirname(link))} isn’t on your PATH yet, so a terminal won’t find it. Add this line to ${file}, then open a new terminal window:\n\n${line}`,
+    });
+    if (response === 0) clipboard.writeText(line);
+    return;
+  }
+  const same = (a, b) => {
+    try {
+      return fs.realpathSync(a) === fs.realpathSync(b);
+    } catch {
+      return false;
+    }
+  };
+  const shadowed = found && !same(found, link);
+  await tell('The todos command is installed', shadowed
+    ? `${installed}\n\nA different todos comes first on your PATH, though: ${tildify(found)}`
+    : `${installed}\n\nOpen a new terminal window and type: todos`);
+}
+
+async function uninstallCommandLineTool() {
+  const { link, binary } = cliPaths();
+  try {
+    unlinkCli(link, binary);
+  } catch (e) {
+    return box({ type: 'warning', buttons: ['OK'], message: 'The todos command was not removed', detail: e.message });
+  }
+  buildMenu();
+  debug('command line tool: removed');
+  await tell('The todos command was removed', `${tildify(link)} is gone. The copy inside Todos is untouched, and you can install it again at any time.`);
+}
+
+function commandLineMenu() {
+  const state = cliState();
+  const items = [
+    { id: 'install-cli', label: 'Install Command Line Tool', enabled: state !== 'ours' && fs.existsSync(cliPaths().binary), click: installCommandLineTool },
+    { id: 'uninstall-cli', label: 'Uninstall Command Line Tool', enabled: state === 'ours' || state === 'stale', click: uninstallCommandLineTool },
+  ];
+  // Only when something is wrong: the command reaches the app through the local socket.
+  if (socketTrouble()) {
+    items.push({ id: 'cli-trouble', label: 'Why the todos Command Can’t Connect…', click: () => tell('The todos command can’t reach this copy of Todos', socketTrouble()) });
+  }
+  return items;
 }
 
 // ---------- quick capture ----------
@@ -724,6 +824,7 @@ function buildMenu() {
           ],
         },
         remoteMenu(),
+        ...commandLineMenu(),
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -776,8 +877,20 @@ function buildMenu() {
 // front. The app's own tests ask this instead of guessing from the outside.
 if (process.env.TODOS_DEBUG) {
   const windowState = (w) => (!w || w.isDestroyed() ? 'none' : w.isVisible() ? 'visible' : 'hidden');
+  const enabled = (id) => Menu.getApplicationMenu()?.getMenuItemById(id)?.enabled ?? null;
   process.on('SIGUSR2', () => {
-    console.log(`state: ${JSON.stringify({ active: app.isActive(), window: windowState(win), capture: windowState(captureWin), tray: !!tray, socket: dashboard?.socket || null })}`);
+    // A menu item named in <settings folder>/debug-click is chosen first, as if from the menu.
+    const request = path.join(app.getPath('userData'), 'debug-click');
+    if (fs.existsSync(request)) {
+      const id = fs.readFileSync(request, 'utf8').trim();
+      fs.rmSync(request);
+      Menu.getApplicationMenu()?.getMenuItemById(id)?.click();
+      console.log(`clicked: ${id}`);
+    }
+    console.log(`state: ${JSON.stringify({
+      active: app.isActive(), window: windowState(win), capture: windowState(captureWin), tray: !!tray, socket: dashboard?.socket || null,
+      menu: { install: enabled('install-cli'), uninstall: enabled('uninstall-cli') },
+    })}`);
   });
 }
 
@@ -799,6 +912,8 @@ app.on('before-quit', () => {
 });
 // Stops the server, which also removes the local socket's file.
 app.on('will-quit', () => dashboard?.close());
+// The command line items say what is on disk now, which can change while the app is in the background.
+app.on('did-become-active', () => dashboardUrl && buildMenu());
 
 // macOS sends this when the app is opened while it is already running: a Dock
 // click, Spotlight, `open -a Todos`. It sends the very same thing for `open -g`,

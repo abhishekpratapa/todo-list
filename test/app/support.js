@@ -32,6 +32,12 @@ const electronBundle = (() => {
 })();
 export const skip = process.platform !== 'darwin' ? 'only on a Mac' : !electronBundle && 'needs Electron (npm install)';
 
+// The app as `npm run dist` last packaged it, or null if it hasn't been built here.
+export const packagedApp = (() => {
+  const built = path.join(REPO, 'dist', 'mac-arm64', 'Todos.app');
+  return fs.existsSync(built) ? built : null;
+})();
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function until(check, ms = 15_000) {
   for (const start = Date.now(); Date.now() - start < ms;) {
@@ -83,7 +89,8 @@ function frontApp() {
 // A place for one copy of the app to live, and the ways to drive it.
 //   settings   written to its settings.json before it starts
 //   env        extra environment for the app
-export function sandbox({ settings = {}, env = {} } = {}) {
+//   packaged   an app bundle to run instead of this checkout's sources (see packagedApp)
+export function sandbox({ settings = {}, env = {}, packaged = null } = {}) {
   // realpath, and kept short: the socket's path has to fit in 103 bytes.
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'todos-app-')));
   const userData = path.join(root, 'user');
@@ -91,18 +98,18 @@ export function sandbox({ settings = {}, env = {} } = {}) {
   const socketPath = path.join(root, 't.sock');
   const log = path.join(root, 'app.log');
   fs.mkdirSync(userData);
-  const sources = path.join(root, 'app');
-  for (const part of ['electron', 'src', 'public', 'package.json']) fs.cpSync(path.join(REPO, part), path.join(sources, part), { recursive: true });
+  const sources = packaged ? null : path.join(root, 'app');
+  if (sources) for (const part of ['electron', 'src', 'public', 'package.json']) fs.cpSync(path.join(REPO, part), path.join(sources, part), { recursive: true });
   // Quiet by default: no global shortcut to fight over, and nothing that pops up.
   fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ captureShortcut: null, dailySummary: false, reminderNotifications: false, claudeNotifications: false, ...settings }));
 
   // A copy of the bundle with a path of its own, so `open` can never mistake some
   // other running Electron for this one. On APFS the copy is a clone and takes no space.
-  const bundle = path.join(root, 'Electron.app');
+  const bundle = path.join(root, packaged ? 'Todos.app' : 'Electron.app');
   try {
-    execFileSync('/bin/cp', ['-Rc', electronBundle, bundle], { stdio: 'ignore' });
+    execFileSync('/bin/cp', ['-Rc', packaged || electronBundle, bundle], { stdio: 'ignore' });
   } catch {
-    execFileSync('/bin/cp', ['-R', electronBundle, bundle]);
+    execFileSync('/bin/cp', ['-R', packaged || electronBundle, bundle]);
   }
 
   const inFront = frontApp(); // put back in front at the end, since some tests take its place
@@ -121,7 +128,7 @@ export function sandbox({ settings = {}, env = {} } = {}) {
   let launched = false;
 
   const app = {
-    root, userData, dataFile, socketPath, log, lines,
+    root, userData, dataFile, socketPath, log, lines, sources, bundle,
     get pid() {
       return pid;
     },
@@ -129,9 +136,10 @@ export function sandbox({ settings = {}, env = {} } = {}) {
     // Runs `open` for this copy. `flags` go to open itself (e.g. ['-g']), `args` to the app.
     // The environment and the log can only be given to a copy that is being started.
     open(flags = [], args = []) {
-      const setup = launched ? [] : [...Object.entries(environment).flatMap(([k, v]) => ['--env', `${k}=${v}`]), '--stdout', log, '--stderr', log];
+      // -n for a packaged copy: the installed app has the same identifier, and must never be taken for this one.
+      const setup = launched ? [] : [...(packaged ? ['-n'] : []), ...Object.entries(environment).flatMap(([k, v]) => ['--env', `${k}=${v}`]), '--stdout', log, '--stderr', log];
       launched = true;
-      execFileSync('/usr/bin/open', [...flags, '-a', bundle, ...setup, '--args', sources, ...args]);
+      execFileSync('/usr/bin/open', [...flags, '-a', bundle, ...setup, '--args', ...(sources ? [sources] : []), ...args]);
     },
 
     // Waits until the app answers its health check on the socket, and learns its pid.
@@ -153,6 +161,13 @@ export function sandbox({ settings = {}, env = {} } = {}) {
       }, 5000);
       if (!all) throw new Error('the app did not report its state');
       return JSON.parse(all.at(-1).slice('state: '.length));
+    },
+
+    // Chooses a menu item by its id, as if from the menu. Resolves to the app's state
+    // right afterwards; what the item goes on to do shows up in the log.
+    click(id) {
+      fs.writeFileSync(path.join(userData, 'debug-click'), id);
+      return app.state();
     },
 
     // Asks the app to quit and waits until it has. Resolves to whether it went by itself.
