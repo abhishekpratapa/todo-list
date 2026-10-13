@@ -95,7 +95,7 @@ final class Reminders {
 
     /// Turns task reminders on or off here. Turning them on asks iOS for permission the first
     /// time; returns false if the user has refused it, in which case the setting stays off.
-    func setEnabled(_ on: Bool, tasks: [TodoTask], habits: [Habit] = []) async -> Bool {
+    func setEnabled(_ on: Bool, tasks: [TodoTask], habits: [Habit] = [], now: Date = Date()) async -> Bool {
         if on, await centre.permission() != .allowed {
             guard await centre.askPermission() else {
                 defaults.set(false, forKey: Self.enabledKey)
@@ -103,12 +103,12 @@ final class Reminders {
             }
         }
         defaults.set(on, forKey: Self.enabledKey)
-        await reschedule(tasks: tasks, habits: habits)
+        await reschedule(tasks: tasks, habits: habits, now: now)
         return true
     }
 
     /// Turns habit reminders on or off here. Returns false if they are wanted and iOS won't show them.
-    func setHabitsEnabled(_ on: Bool, tasks: [TodoTask], habits: [Habit]) async -> Bool {
+    func setHabitsEnabled(_ on: Bool, tasks: [TodoTask], habits: [Habit], now: Date = Date()) async -> Bool {
         defaults.set(!on, forKey: Self.habitsOffKey)
         var allowed = true
         if on {
@@ -118,15 +118,15 @@ final class Reminders {
             case .notAsked: allowed = await centre.askPermission()
             }
         }
-        await reschedule(tasks: tasks, habits: habits)
+        await reschedule(tasks: tasks, habits: habits, now: now)
         return allowed
     }
 
     /// Habits that have reminder times need iOS's permission to keep them. The first time
     /// there are any, and the app is on screen, the user is asked.
-    func askForHabits(_ habits: [Habit], tasks: [TodoTask]) async {
-        guard habitsEnabled, await centre.permission() == .notAsked, !HabitReminderPlan.plan(for: habits, days: 8).isEmpty else { return }
-        if await centre.askPermission() { await reschedule(tasks: tasks, habits: habits) }
+    func askForHabits(_ habits: [Habit], tasks: [TodoTask], now: Date = Date()) async {
+        guard habitsEnabled, await centre.permission() == .notAsked, !HabitReminderPlan.plan(for: habits, now: now, days: 8).isEmpty else { return }
+        if await centre.askPermission() { await reschedule(tasks: tasks, habits: habits, now: now) }
     }
 
     /// Brings the notifications that are waiting in line with the plan: adds new and changed

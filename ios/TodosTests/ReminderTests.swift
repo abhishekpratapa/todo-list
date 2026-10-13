@@ -129,21 +129,22 @@ struct ReminderTests {
         #expect(centre.pending.keys.allSatisfy { $0.hasPrefix("habit-") }, "the task's reminder is not scheduled until asked for")
         #expect(centre.pending[id(brush, "morning")] != nil && reminders.plan?.habitsCoveredThrough != nil)
 
-        #expect(await reminders.setEnabled(true, tasks: tasks, habits: [brush]))
+        // Every step is as of this morning, whatever time the test is run at.
+        #expect(await reminders.setEnabled(true, tasks: tasks, habits: [brush], now: morning))
         #expect(centre.pending["reminder-1"] != nil)
-        #expect(await reminders.setHabitsEnabled(false, tasks: tasks, habits: [brush]))
+        #expect(await reminders.setHabitsEnabled(false, tasks: tasks, habits: [brush], now: morning))
         #expect(centre.pending.keys.sorted() == ["reminder-1"], "habit reminders, and the notice with them, are gone")
         #expect(!Reminders(centre: centre, defaults: defaults).habitsEnabled, "and the choice is remembered")
 
         // iOS has refused: nothing can be scheduled, and turning them on says so.
         centre.set(.refused)
-        #expect(await reminders.setHabitsEnabled(true, tasks: tasks, habits: [brush]) == false)
+        #expect(await reminders.setHabitsEnabled(true, tasks: tasks, habits: [brush], now: morning) == false)
         #expect(centre.pending.isEmpty)
         // Never asked: having habits with reminder times is the moment to ask, once.
         centre.set(.notAsked)
-        await reminders.askForHabits([brush], tasks: tasks)
+        await reminders.askForHabits([brush], tasks: tasks, now: morning)
         #expect(centre.asked == 1 && centre.pending[id(brush, "evening")] != nil)
-        await reminders.askForHabits([brush], tasks: tasks)
+        await reminders.askForHabits([brush], tasks: tasks, now: morning)
         #expect(centre.asked == 1)
     }
 
