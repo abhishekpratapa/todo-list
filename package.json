@@ -1,7 +1,7 @@
 {
   "name": "todolist",
   "productName": "Todos",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "A todo list shared between you and your Claude Code / Cowork sessions (via MCP).",
   "type": "module",
   "main": "electron/main.js",
