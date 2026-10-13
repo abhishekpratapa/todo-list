@@ -6,7 +6,6 @@
 // The menu items and their dialogs are in main.js. This is the part that touches
 // the disk, kept free of Electron so it can be tested. Node built-ins only.
 
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -84,15 +83,39 @@ export function uninstall(link, binary) {
   fs.unlinkSync(link);
 }
 
-// What typing `todos` in a new terminal would run: the path the user's own login
-// shell finds, null if it finds none, or undefined if the shell couldn't be asked.
-export function resolvedByShell({ shell = process.env.SHELL || '/bin/zsh', timeout = 5000 } = {}) {
-  return new Promise((resolve) => {
-    const child = execFile(shell, ['-ilc', 'command -v todos'], { timeout }, (err, stdout) => {
-      const found = String(stdout).trim().split('\n').filter((line) => line.startsWith('/')).pop();
-      if (found) resolve(found);
-      else resolve(err && (err.killed || err.code === 'ENOENT') ? undefined : null);
-    });
-    child.stdin?.end();
+// Whether a new terminal window is likely to find commands in `dir`: true if one
+// of the shell's startup files, or the system's own list of paths, mentions the
+// folder. The files are only read. Asking the shell itself would mean running
+// the user's startup files from inside the app, and whatever those do would be
+// done in the app's name: macOS then asks whether "Todos" may read the folders
+// they happen to touch.
+const STARTUP_FILES = {
+  zsh: ['.zshenv', '.zprofile', '.zshrc', '.zlogin'],
+  bash: ['.bash_profile', '.bash_login', '.profile', '.bashrc'],
+  fish: ['.config/fish/config.fish'],
+};
+
+export function onShellPath(dir, { home = os.homedir(), shell = process.env.SHELL || '/bin/zsh', systemPaths = ['/etc/paths', '/etc/paths.d'] } = {}) {
+  const read = (file) => {
+    try {
+      return fs.readFileSync(file, 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  // The ways the folder is usually written: in full, or from the home folder.
+  const rest = dir.startsWith(`${home}/`) ? dir.slice(home.length) : null;
+  const spellings = [dir, ...(rest ? [`$HOME${rest}`, `\${HOME}${rest}`, `~${rest}`] : [])];
+  const startup = (STARTUP_FILES[path.basename(shell)] || ['.profile']).map((file) => read(path.join(home, file)));
+  if (startup.some((text) => spellings.some((spelling) => text.includes(spelling)))) return true;
+
+  // /etc/paths and the files in /etc/paths.d list one folder a line, for every shell.
+  const lists = systemPaths.flatMap((entry) => {
+    try {
+      return fs.statSync(entry).isDirectory() ? fs.readdirSync(entry).map((name) => path.join(entry, name)) : [entry];
+    } catch {
+      return [];
+    }
   });
+  return lists.some((file) => read(file).split('\n').some((line) => line.trim() === dir));
 }

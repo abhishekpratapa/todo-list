@@ -20,7 +20,7 @@ import { socketPath } from '../src/socket.js';
 import * as tailscale from '../src/tailscale.js';
 import { showPairing } from './pairing.js';
 import { createHandoff } from './handoff.js';
-import { bundledCli, cliLink, install as linkCli, linkState, resolvedByShell, uninstall as unlinkCli } from './cli-install.js';
+import { bundledCli, cliLink, install as linkCli, linkState, onShellPath, uninstall as unlinkCli } from './cli-install.js';
 import { tildify } from '../src/claude-session.js';
 
 // TODOS_USER_DATA keeps a second copy (one run from source, or by the tests) apart
@@ -431,32 +431,21 @@ async function installCommandLineTool() {
   buildMenu();
   debug('command line tool: installed');
 
-  // Would a new terminal window find it? Ask the user's own shell.
-  const found = await resolvedByShell();
+  // Would a new terminal window find it? The shell's startup files say, without running anything.
   const installed = `${tildify(link)} now runs the copy of the command inside Todos.`;
-  if (found === null) {
-    const { line, file } = pathAdvice(path.dirname(link));
-    const { response } = await box({
-      type: 'info',
-      buttons: ['Copy Line', 'OK'],
-      defaultId: 1,
-      message: 'The todos command is installed',
-      detail: `${installed}\n\n${tildify(path.dirname(link))} isn’t on your PATH yet, so a terminal won’t find it. Add this line to ${file}, then open a new terminal window:\n\n${line}`,
-    });
-    if (response === 0) clipboard.writeText(line);
+  if (onShellPath(path.dirname(link))) {
+    await tell('The todos command is installed', `${installed}\n\nOpen a new terminal window and type: todos`);
     return;
   }
-  const same = (a, b) => {
-    try {
-      return fs.realpathSync(a) === fs.realpathSync(b);
-    } catch {
-      return false;
-    }
-  };
-  const shadowed = found && !same(found, link);
-  await tell('The todos command is installed', shadowed
-    ? `${installed}\n\nA different todos comes first on your PATH, though: ${tildify(found)}`
-    : `${installed}\n\nOpen a new terminal window and type: todos`);
+  const { line, file } = pathAdvice(path.dirname(link));
+  const { response } = await box({
+    type: 'info',
+    buttons: ['Copy Line', 'OK'],
+    defaultId: 1,
+    message: 'The todos command is installed',
+    detail: `${installed}\n\n${tildify(path.dirname(link))} doesn’t seem to be on your PATH. If a new terminal window can’t find todos, add this line to ${file} and open another:\n\n${line}`,
+  });
+  if (response === 0) clipboard.writeText(line);
 }
 
 async function uninstallCommandLineTool() {

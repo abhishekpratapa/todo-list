@@ -160,7 +160,7 @@ The app carries a command-line client, `todos`, inside its bundle (`Todos.app/Co
 
 ### Install it
 
-Choose **Todos → Install Command Line Tool**. This links `~/.local/bin/todos` to the copy inside the app, so the command is always the one that came with the app you have installed. It needs no password. If `~/.local/bin` isn't on your PATH, the app says so and shows the one line to add; it never edits your shell's files itself. **Uninstall Command Line Tool** removes the link. Neither will touch a `todos` that something else put there. If you move the app, choose Install again.
+Choose **Todos → Install Command Line Tool**. This links `~/.local/bin/todos` to the copy inside the app, so the command is always the one that came with the app you have installed. It needs no password. If `~/.local/bin` doesn't appear in your shell's startup files, the app says so and shows the one line to add. It only reads those files: it never runs or edits them. **Uninstall Command Line Tool** removes the link. Neither will touch a `todos` that something else put there. If you move the app, choose Install again.
 
 ### On this Mac
 

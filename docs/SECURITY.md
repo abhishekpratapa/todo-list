@@ -62,7 +62,7 @@ While the app runs, its server also listens on a Unix domain socket: `~/Library/
 
 **Starting the app in the background.** `open -g -a Todos --args --background` starts the app with no window. It grants nothing: it is the same app, started by you. Over SSH it only works while you are logged in to the Mac's desktop.
 
-**Install Command Line Tool.** This makes one symbolic link, `~/.local/bin/todos`, pointing at the copy of the command inside the app. It is done as you: no password is asked for and nothing runs as root. It never replaces or removes anything it did not put there. To tell you whether a terminal will find the command, the app asks your own login shell, which runs your shell's startup files as opening a terminal does; it never edits them. The command inside the app is signed the same way the app is (ad hoc, not notarized).
+**Install Command Line Tool.** This makes one symbolic link, `~/.local/bin/todos`, pointing at the copy of the command inside the app. It is done as you: no password is asked for and nothing runs as root. It never replaces or removes anything it did not put there. To tell you whether a terminal will find the command, the app reads your shell's startup files and looks for that folder. It does not run them or a shell: anything they did would be done in the app's name, and macOS would then ask whether Todos may read whatever folders they touch. The command inside the app is signed the same way the app is (ad hoc, not notarized).
 
 ## Conflicts
 

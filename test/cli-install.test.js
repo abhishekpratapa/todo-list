@@ -8,7 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { tmp } from './support/helpers.js';
 
-const { CliInstallError, bundledCli, cliLink, install, linkState, resolvedByShell, uninstall } = await import('../electron/cli-install.js');
+const { CliInstallError, bundledCli, cliLink, install, linkState, onShellPath, uninstall } = await import('../electron/cli-install.js');
 
 // A stand-in for the app bundle with its command inside, and a folder on the PATH.
 let n = 0;
@@ -97,21 +97,43 @@ test('a copy of the app with no command inside installs nothing', () => {
   assert.equal(fs.existsSync(path.dirname(link)), false, 'not even the folder was made');
 });
 
-test('the user\'s own shell is asked what `todos` would run', async () => {
-  const shell = (script) => {
-    const file = path.join(tmp, `shell-${++n}`);
-    fs.writeFileSync(file, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
-    return file;
-  };
-  // Found, with the noise a login shell prints first.
-  assert.equal(await resolvedByShell({ shell: shell('echo "Welcome back!"; echo /Users/someone/.local/bin/todos') }), '/Users/someone/.local/bin/todos');
-  // Not on the PATH: `command -v` prints nothing and fails.
-  assert.equal(await resolvedByShell({ shell: shell('exit 1') }), null);
-  // Couldn't ask: no such shell, or it never answers.
-  assert.equal(await resolvedByShell({ shell: path.join(tmp, 'no-such-shell') }), undefined);
-  assert.equal(await resolvedByShell({ shell: shell('sleep 5'), timeout: 200 }), undefined);
-  // It is asked the way a new terminal window would be: as an interactive login shell.
-  const args = path.join(tmp, 'shell-args');
-  await resolvedByShell({ shell: shell(`echo "$@" > '${args}'`) });
-  assert.equal(fs.readFileSync(args, 'utf8').trim(), '-ilc command -v todos');
+test('whether a terminal would find the command is read from the shell\'s startup files, and nothing is run', () => {
+  const home = path.join(tmp, `home-${++n}`);
+  fs.mkdirSync(home);
+  const dir = path.join(home, '.local', 'bin');
+  const none = path.join(tmp, 'no-system-paths');
+  const ask = (shell = '/bin/zsh', folder = dir) => onShellPath(folder, { home, shell, systemPaths: [none] });
+
+  assert.equal(ask(), false, 'no startup files at all');
+  // A startup file that would give itself away if it were ever run.
+  const canary = path.join(tmp, 'startup-file-was-run');
+  fs.writeFileSync(path.join(home, '.zshrc'), `touch '${canary}'\nexport PATH="/somewhere/else:$PATH"\n`);
+  assert.equal(ask(), false, 'a PATH line for some other folder');
+
+  // However the folder is written.
+  for (const line of ['export PATH="$HOME/.local/bin:$PATH"', 'path=(~/.local/bin $path)', `PATH=${dir}:$PATH`, 'export PATH="${HOME}/.local/bin:$PATH"']) {
+    fs.writeFileSync(path.join(home, '.zprofile'), `${line}\n`);
+    assert.equal(ask(), true, line);
+  }
+  assert.equal(fs.existsSync(canary), false, 'the startup files were read, not run');
+
+  // Each shell has its own files.
+  assert.equal(ask('/bin/bash'), false, 'bash does not read .zprofile');
+  fs.writeFileSync(path.join(home, '.bash_profile'), 'export PATH="$HOME/.local/bin:$PATH"\n');
+  assert.equal(ask('/bin/bash'), true);
+
+  // A folder every shell gets from the system's own lists.
+  const etc = path.join(tmp, `etc-${n}`);
+  fs.mkdirSync(path.join(etc, 'paths.d'), { recursive: true });
+  fs.writeFileSync(path.join(etc, 'paths'), '/usr/local/bin\n/usr/bin\n');
+  fs.writeFileSync(path.join(etc, 'paths.d', 'extra'), '/opt/extra/bin\n');
+  const system = (folder) => onShellPath(folder, { home, shell: '/bin/zsh', systemPaths: [path.join(etc, 'paths'), path.join(etc, 'paths.d')] });
+  assert.equal(system('/usr/local/bin'), true);
+  assert.equal(system('/opt/extra/bin'), true);
+  assert.equal(system('/usr/local'), false, 'the folder itself, not one that merely starts the same');
+});
+
+test('nothing in the install code starts another program', () => {
+  const source = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'electron', 'cli-install.js'), 'utf8');
+  assert.equal(/child_process|execFile|spawn/.test(source.replace(/^\s*\/\/.*$/gm, '')), false);
 });
