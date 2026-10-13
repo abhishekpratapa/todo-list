@@ -23,7 +23,8 @@ import {
   load, getTodo, createTodo, updateTodo, deleteTodo, summarize, sortTodos, watchStore,
 } from './store.js';
 import { parseQuickAdd } from './quickadd.js';
-import { habitsState, watchHabits } from './habits.js';
+import { HabitError, checkIn, habitHistory, habitsState, listHabits, skipDay, undo, updateHabit, watchHabits } from './habits.js';
+import * as habitText from './habit-text.js';
 import { COOKIE, bearerToken, parseCookies, rateLimiter } from './auth.js';
 import { json, readJson } from './http.js';
 import { createV1, health } from './api-v1.js';
@@ -73,6 +74,19 @@ function expandQuick(body) {
 function snapshot() {
   const db = load();
   return { version: db.version, updatedAt: db.updatedAt, todos: sortTodos(db.todos), summary: summarize(db.todos) };
+}
+
+// Habits as the dashboard shows them: in the order of today's list (to do, done,
+// nothing today), each with the lines that say how it stands.
+function habitsSnapshot() {
+  const { habits, zone, version } = listHabits();
+  const groups = habitText.forToday(habits);
+  const shown = (group) => (h) => ({
+    ...h,
+    group,
+    text: { progress: habitText.progress(h), schedule: habitText.schedule(h.schedule), atRisk: habitText.atRisk(h), ended: habitText.ended(h) },
+  });
+  return { version, zone, left: habitText.leftToday(habits), habits: Object.entries(groups).flatMap(([group, list]) => list.map(shown(group))) };
 }
 
 const withoutPort = (host) => host.replace(/:\d+$/, '');
@@ -345,6 +359,30 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
       if (req.method === 'DELETE') return json(res, 200, deleteTodo(m[1], { ifRev: url.searchParams.get('rev') }));
     }
 
+    // Habits, for the dashboard: today's list, one habit's past, and what is done
+    // from here (checking in, taking that back, a rest day, pausing). Each answers
+    // with the whole list again, since one check-in can reorder it. Making and
+    // editing habits is /api/v1/habits.
+    if (p === '/api/habits' && req.method === 'GET') return json(res, 200, habitsSnapshot());
+    const hb = p.match(/^\/api\/habits\/(\d+)(?:\/(history|checkins|undo|skips))?$/);
+    if (hb) {
+      const [, id, what] = hb;
+      if (what === 'history' && req.method === 'GET') {
+        return json(res, 200, habitHistory(id, { from: url.searchParams.get('from') ?? undefined, to: url.searchParams.get('to') ?? undefined }));
+      }
+      const change = { checkins: checkIn, undo, skips: skipDay }[what];
+      if (change && req.method === 'POST') {
+        const { slot, day, skip } = await readJson(req, ctx.bodyLimit);
+        change(id, what === 'undo' ? { slot, day, skip } : { slot, day }, 'me', { via: await viaLabel(req, ctx) });
+        return json(res, 200, habitsSnapshot());
+      }
+      if (!what && req.method === 'PATCH') {
+        const { paused } = await readJson(req, ctx.bodyLimit);
+        updateHabit(id, { paused: !!paused });
+        return json(res, 200, habitsSnapshot());
+      }
+    }
+
     if (p.startsWith('/api/')) return json(res, 404, { error: 'Not found' });
 
     if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed' });
@@ -389,6 +427,7 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
       if (ctx.local || url.pathname.startsWith('/api/v1/')) return v1.fail(res, e);
       if (e instanceof ConflictError) return json(res, 409, { error: e.message, code: 'conflict', current: e.current });
       if (e instanceof NotFoundError) return json(res, 404, { error: e.message });
+      if (e instanceof HabitError) return json(res, 400, { error: e.message, code: e.code }); // "too_late", "skip_limit"...
       if (e instanceof TodoError) return json(res, 400, { error: e.message });
       console.error(e);
       json(res, 500, { error: 'Internal error' });

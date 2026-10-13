@@ -1,7 +1,8 @@
 // Electron shell for the Todos dashboard. Runs the dashboard server in-process,
 // shows it in a native window, keeps the Dock badge and menu bar item in sync with
-// what's due, delivers reminder notifications, and provides quick capture: a global
-// shortcut that opens a small floating panel for adding a task from any app.
+// what's due and which habits are left today, delivers reminder notifications,
+// and provides quick capture: a global shortcut that opens a small floating panel
+// for adding a task from any app.
 // The bundled MCP server (src/mcp.js) is launched separately by Claude, using
 // this app's binary in node mode (ELECTRON_RUN_AS_NODE=1).
 
@@ -14,6 +15,10 @@ import { startServer } from '../src/server.js';
 import {
   DATA_FILE, PORT, ROOT, dailySummary, dueGroups, load, markReminded, pendingReminders, summarize, today, watchStore,
 } from '../src/store.js';
+import { checkIn, listHabits, watchHabits } from '../src/habits.js';
+import * as habitText from '../src/habit-text.js';
+import { dueReminders } from '../src/habit-reminders.js';
+import { localParts } from '../src/streaks.js';
 import { COOKIE } from '../src/auth.js';
 import { createRemote } from '../src/remote.js';
 import { socketPath } from '../src/socket.js';
@@ -42,6 +47,7 @@ const debug = (line) => process.env.TODOS_DEBUG && console.log(line);
 let win = null;
 let captureWin = null;
 let tray = null;
+let trayMenu = null; // what the menu bar item shows, kept so the tests can choose from it
 let dashboardUrl = null;
 let dashboard = null; // the running server: { url, port, socket, socketProblem, close() }
 let quitting = false;
@@ -161,6 +167,8 @@ const settings = {
   dailySummary: true,
   lastSummaryDate: null,
   reminderNotifications: true, // off for someone who gets their reminders on the iPhone instead
+  habitNotifications: false, // habit reminders come from the iPhone; on for someone who wants them here too
+  habitReminded: [], // the habit reminders already shown (see src/habit-reminders.js), so none is shown twice
   captureShortcut: 'Control+Alt+T',
   showTray: true,
   claudeNotifications: true,
@@ -586,7 +594,48 @@ function trayTaskItems(todos) {
   return items;
 }
 
-function updateTray(todos) {
+// A slot's name for a menu item. One with no name adds nothing to the habit's own.
+const slotLabel = (habit, id) => habit.schedule.slots?.find((s) => s.id === id)?.name || '';
+
+// Habits still to do today, each checked in with a click, and yesterday's where a
+// streak hangs on it. A click names the slot it showed, so the two always agree.
+function trayHabitItems({ habits, zone }) {
+  const { due, done } = habitText.forToday(habits);
+  const risky = habitText.atRiskHabits(habits);
+  if (!due.length && !done.length && !risky.length) return [];
+  const log = (habit, input) => () => {
+    try {
+      checkIn(habit.id, input, 'me');
+    } catch (e) {
+      console.error(`Could not check in ${habit.name}: ${e.message}`);
+    }
+    refreshIndicators();
+  };
+  const left = habitText.leftToday(habits);
+  const items = [{ label: left ? `Habits · ${left} left today` : 'Habits · all done today', enabled: false }];
+  const { time } = localParts(Date.now(), zone);
+  for (const h of due.slice(0, 8)) {
+    const slot = habitText.nextSlot(h, time);
+    const what = slot ? slotLabel(h, slot) : habitText.progress(h);
+    items.push({ id: `habit-${h.id}`, label: [clip(h.name, 36), what].filter(Boolean).join(' · '), click: log(h, { slot }) });
+  }
+  if (due.length > 8) items.push({ label: `${due.length - 8} more…`, click: showWindow });
+  if (risky.length) {
+    items.push({ label: 'Still time for yesterday', enabled: false });
+    for (const h of risky.slice(0, 4)) {
+      const missing = h.streak.atRisk.missing;
+      items.push({
+        id: `habit-${h.id}-yesterday`,
+        label: [clip(h.name, 36), missing.map((id) => slotLabel(h, id)).filter(Boolean).join(', ')].filter(Boolean).join(' · '),
+        click: () => (missing.length ? missing : [undefined]).forEach((slot) => log(h, { slot, day: 'yesterday' })()),
+      });
+    }
+  }
+  items.push({ type: 'separator' });
+  return items;
+}
+
+function updateTray(todos, habits) {
   if (!settings.showTray) {
     tray?.destroy();
     tray = null;
@@ -605,14 +654,26 @@ function updateTray(todos) {
     { label: 'New Task…', accelerator: shortcutRegistered ? settings.captureShortcut : undefined, registerAccelerator: false, click: showCapture },
     { type: 'separator' },
     ...trayTaskItems(todos),
+    ...trayHabitItems(habits),
     { label: 'Open Todos', click: showWindow },
     { label: 'Quit Todos', click: () => app.quit() },
   ];
-  tray.setContextMenu(Menu.buildFromTemplate(template));
+  trayMenu = Menu.buildFromTemplate(template);
+  tray.setContextMenu(trayMenu);
   if (process.env.TODOS_DEBUG) console.log(`tray: title="${tray.getTitle()}" menu=${JSON.stringify(template.map((item) => item.label || '---'))}`);
 }
 
-// Dock badge and menu bar count both show overdue + due today.
+// Habits as they stand now, or none if their file can't be read at the moment.
+function habitsNow() {
+  try {
+    return listHabits();
+  } catch {
+    return { habits: [], zone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+  }
+}
+
+// Dock badge and menu bar count both show overdue + due today. Habits are listed
+// in the menu but not counted: an evening habit is not something to do all day.
 function refreshIndicators() {
   let todos;
   try {
@@ -623,7 +684,7 @@ function refreshIndicators() {
   const s = summarize(todos);
   const attention = s.overdue + s.due_today;
   app.dock?.setBadge(attention ? String(attention) : '');
-  updateTray(todos);
+  updateTray(todos, habitsNow());
   notifyClaudeUpdates(todos);
 }
 
@@ -658,8 +719,20 @@ function dueLabel(due, t0) {
   return ` · due ${new Date(due + 'T00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`;
 }
 
+// Shows the habit reminders that have come due (see src/habit-reminders.js), each
+// once. Only while "Habit Reminders on This Mac" is on.
+function checkHabitReminders() {
+  if (!settings.habitNotifications) return;
+  const due = dueReminders(habitsNow().habits, Date.now(), settings.habitReminded);
+  if (!due.length) return;
+  settings.habitReminded = [...settings.habitReminded, ...due.map((r) => r.key)].slice(-60); // first, so none can be shown twice
+  saveSettings();
+  for (const r of due) notify({ title: r.title, body: r.body, onClick: () => runInPage(`window.todos.openHabit(${r.habit})`) });
+}
+
 // Delivers reminders whose time has come (including ones missed while the app was
-// closed), and once a day from 9:00 a summary of what's due today or overdue.
+// closed), and once a day from 9:00 a summary of what's due today or overdue,
+// which habits today asks for, and any streak that hangs on finishing yesterday.
 function checkReminders() {
   let todos;
   try {
@@ -668,6 +741,7 @@ function checkReminders() {
     return; // data file unreadable right now; the next tick will retry
   }
   const t0 = today();
+  checkHabitReminders();
 
   const due = pendingReminders(todos);
   if (due.length) {
@@ -690,8 +764,8 @@ function checkReminders() {
   if (settings.dailySummary && settings.lastSummaryDate !== t0 && new Date().getHours() >= SUMMARY_HOUR) {
     settings.lastSummaryDate = t0;
     saveSettings();
-    const summary = dailySummary(todos);
-    if (summary) notify({ title: summary.title, body: summary.body, onClick: showWindow });
+    const parts = [dailySummary(todos), habitText.dailyHabitSummary(habitsNow().habits)].filter(Boolean);
+    if (parts.length) notify({ title: parts.map((s) => s.title).join(' · '), body: parts.map((s) => s.body).join('\n'), onClick: showWindow });
   }
 }
 
@@ -765,6 +839,17 @@ function buildMenu() {
           click: (item) => {
             settings.reminderNotifications = item.checked;
             saveSettings();
+          },
+        },
+        {
+          id: 'habit-reminders',
+          label: 'Habit Reminders on This Mac',
+          type: 'checkbox',
+          checked: settings.habitNotifications,
+          click: (item) => {
+            settings.habitNotifications = item.checked;
+            saveSettings();
+            if (item.checked) checkReminders(); // what is due right now, without waiting for the next look
           },
         },
         {
@@ -868,12 +953,13 @@ if (process.env.TODOS_DEBUG) {
   const windowState = (w) => (!w || w.isDestroyed() ? 'none' : w.isVisible() ? 'visible' : 'hidden');
   const enabled = (id) => Menu.getApplicationMenu()?.getMenuItemById(id)?.enabled ?? null;
   process.on('SIGUSR2', () => {
-    // A menu item named in <settings folder>/debug-click is chosen first, as if from the menu.
+    // A menu item named in <settings folder>/debug-click is chosen first, as if from
+    // the menu (the application's, or the menu bar item's).
     const request = path.join(app.getPath('userData'), 'debug-click');
     if (fs.existsSync(request)) {
       const id = fs.readFileSync(request, 'utf8').trim();
       fs.rmSync(request);
-      Menu.getApplicationMenu()?.getMenuItemById(id)?.click();
+      (Menu.getApplicationMenu()?.getMenuItemById(id) ?? trayMenu?.getMenuItemById(id))?.click();
       console.log(`clicked: ${id}`);
     }
     console.log(`state: ${JSON.stringify({
@@ -962,6 +1048,7 @@ app.whenReady().then(async () => {
   createCaptureWindow();
   refreshIndicators();
   watchStore(refreshIndicators);
+  watchHabits(refreshIndicators);
   setInterval(refreshIndicators, 60_000); // "due today" rolls over at midnight
   if (process.argv.includes('--capture')) showCapture();
 

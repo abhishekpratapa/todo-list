@@ -9,6 +9,8 @@ import {
   DASHBOARD_URL, STATUS_LABELS, STATUSES, PRIORITIES, ASSIGNEES, REPEATS, REPEAT_LABELS, TodoError,
   createTodo, updateTodo, deleteTodo, getTodo, listTodos, today, localStamp,
 } from './store.js';
+import { HABIT_COLORS, checkIn, createHabit, deleteHabit, getHabit, habitHistory, listHabits, undo } from './habits.js';
+import * as habitText from './habit-text.js';
 
 const SUPPORTED_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -18,7 +20,8 @@ const INSTRUCTIONS = `This is the user's personal todo list. The user and all of
 - When you start working on a task that's on the list, set its status to in_progress and its assignee to claude. Leave short progress comments on long tasks, and mark the task done when you finish. Then the user and other sessions can see where things stand.
 - A task can have subtasks (a checklist). When you work through a task that has them, check each one off as you finish it.
 - A task can repeat, and can have a reminder time that notifies the user on their Mac. Set these when the user asks ("every Monday", "remind me at 3pm").
-- This list is for the user's real to-dos. Don't add your own step-by-step work items unless the user asks you to.`;
+- This list is for the user's real to-dos. Don't add your own step-by-step work items unless the user asks you to.
+- The user also tracks habits here: routines such as brushing their teeth or going to the gym, each with a streak. Use habit_list to see them and how today stands, and habit_log when the user tells you they did one. Don't create or delete a habit unless the user explicitly asks you to.`;
 
 // Label for activity entries, e.g. "Claude Code · my-repo".
 let actor = 'Claude';
@@ -219,6 +222,109 @@ const TOOLS = [
     },
   },
 ];
+
+// ---------- habit tools ----------
+
+const habitId = { type: 'integer', description: 'The habit\'s id (see habit_list).' };
+const habitSlot = { type: 'string', description: 'For a habit done at several times of day, which one: its name, e.g. "Morning" or "Evening" (see habit_list). Left out, it is whichever is still to do.' };
+const habitDayArg = { type: 'string', enum: ['today', 'yesterday'], description: 'Default "today". Yesterday can be logged until today ends; nothing further back can.' };
+
+// "Brush teeth (evening)", "Gym for yesterday".
+const logged = (habit, slot, day) => `${habit.name}${slot ? ` (${habitText.slotName(habit, slot).toLowerCase()})` : ''}${day === 'yesterday' ? ' for yesterday' : ''}`;
+
+function habitList({ archived = false } = {}) {
+  const { habits } = listHabits({ archived });
+  if (!habits.length) return '(no habits yet)';
+  const current = habits.filter((h) => !h.archived);
+  const { due, done, off } = habitText.forToday(current);
+  const left = habitText.leftToday(current);
+  const sections = [['To do today', due], ['Done today', done], ['Nothing today', off], ['Archived', habits.filter((h) => h.archived)]]
+    .filter(([, list]) => list.length)
+    .map(([label, list]) => `${label}:\n${list.map((h) => habitText.detail(h)).join('\n')}`);
+  return `${current.length} habit${current.length === 1 ? '' : 's'} · ${left ? `${left} check-in${left === 1 ? '' : 's'} left today` : 'nothing left today'}\n\n${sections.join('\n\n')}`;
+}
+
+TOOLS.push(
+  {
+    name: 'habit_list',
+    title: 'List habits',
+    description: 'List the user\'s habits: what is still to do today, what is done, each habit\'s schedule and its streak. Streaks are worked out by the Todos app; report them as given.',
+    inputSchema: { type: 'object', properties: { archived: { type: 'boolean', description: 'Also list habits the user has archived.' } } },
+    annotations: { readOnlyHint: true },
+    run: habitList,
+  },
+  {
+    name: 'habit_log',
+    title: 'Log a habit',
+    description: 'Check in one of the user\'s habits: record that they did it. Use this when the user tells you they did something they track as a habit ("I just flossed", "log the gym for yesterday"). Don\'t log a habit on a guess.',
+    inputSchema: { type: 'object', properties: { id: habitId, slot: habitSlot, day: habitDayArg }, required: ['id'] },
+    run({ id, slot, day }) {
+      const already = (habit) => `Nothing to log: ${habit.name} is already checked in${day === 'yesterday' ? ' for yesterday' : ' for today'}.\n${habitText.line(habit)}`;
+      // A habit counted in weeks takes one visit a day. A second would be recorded and count for nothing.
+      const before = getHabit(id);
+      const which = { today: 'today', yesterday: 'yesterday' }[day ?? 'today']; // anything else is for checkIn to refuse
+      if (before.schedule.kind === 'weekly' && (slot === undefined || slot === null) && which && before[which].done) return already(before);
+      const { habit, checkin } = checkIn(id, { slot, day, source: 'claude' }, actor);
+      if (!checkin) return already(habit);
+      return `Logged ${logged(habit, checkin.slot, day)}.\n${habitText.detail(habit)}`;
+    },
+  },
+  {
+    name: 'habit_undo',
+    title: 'Take back a habit check-in',
+    description: 'Take back a check-in that a Claude session logged, for one logged by mistake. Check-ins the user made themselves (in the app, on their iPhone, from the command line) are left alone: those are theirs to take back.',
+    inputSchema: { type: 'object', properties: { id: habitId, slot: habitSlot, day: habitDayArg }, required: ['id'] },
+    run({ id, slot, day }) {
+      const habit = getHabit(id);
+      const on = habit[day === 'yesterday' ? 'yesterday' : 'today'].day;
+      const wanted = slot === undefined || slot === null ? null : String(slot).trim().toLowerCase();
+      const known = habit.schedule.slots?.find((s) => s.id === wanted || s.name.toLowerCase() === wanted);
+      if (wanted !== null && !known) throw new TodoError(`"${habit.name}" has no slot "${slot}".`);
+      const standing = habitHistory(id, { from: on, to: on }).events.filter((e) => e.kind === 'done' && !e.undone && (!known || e.slot === known.id));
+      const ours = standing.filter((e) => e.source === 'claude');
+      if (!ours.length) {
+        const others = standing.length ? ' It is checked in, but not by a Claude session, so it was left as it is.' : '';
+        return `Nothing to take back: no Claude session logged ${logged(habit, known?.id, day)}.${others}\n${habitText.line(habit)}`;
+      }
+      const after = undo(id, { checkins: ours.map((e) => e.id) }, actor).habit;
+      return `Took back the check-in: ${logged(habit, known?.id, day)}.\n${habitText.line(after)}`;
+    },
+  },
+  {
+    name: 'habit_add',
+    title: 'Add habit',
+    description: 'Create a new habit. Only use this when the user explicitly asks you to create one, and confirm its schedule with them first if they did not give it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Short, e.g. "Brush teeth".' },
+        icon: { type: 'string', description: 'One emoji.' },
+        color: { type: 'string', enum: HABIT_COLORS },
+        schedule: {
+          type: 'object',
+          description: 'When it is done. One of: {"kind":"daily","slots":[...]} every day; {"kind":"days","days":["mon","wed","fri"],"slots":[...]} on those days of the week; {"kind":"weekly","target":3,"remind":{"days":["mon","wed","fri"],"time":"17:30"}} a number of days a week, whichever they are (remind is optional). A slot is a time of day: {"name":"Morning","remind":"07:30","from":"05:00","until":"11:00","nudge":"08:30"}, where only name is needed, remind is when to be reminded, from and until the hours it belongs in, and nudge a second reminder. Times are 24-hour, in the user\'s local time.',
+        },
+        day_start: { type: 'string', description: 'When the habit\'s day begins, default "03:00", so a late evening still counts for the day before.' },
+      },
+      required: ['name', 'schedule'],
+    },
+    run({ day_start: dayStart, ...input }) {
+      const habit = createHabit(dayStart === undefined ? input : { ...input, dayStart }, actor);
+      return `Added habit ${habitText.detail(habit)}`;
+    },
+  },
+  {
+    name: 'habit_delete',
+    title: 'Delete habit',
+    description: 'Permanently delete a habit together with its whole history and streak. Only use this when the user explicitly asks you to delete it. To stop a habit and keep its history, the user can pause or archive it in the Todos app instead.',
+    inputSchema: { type: 'object', properties: { id: habitId }, required: ['id'] },
+    annotations: { destructiveHint: true },
+    run({ id }) {
+      const habit = deleteHabit(id);
+      return `Deleted habit #${habit.id} ${habit.name}`;
+    },
+  },
+);
 
 // ---------- JSON-RPC plumbing ----------
 

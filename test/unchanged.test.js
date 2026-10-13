@@ -7,9 +7,15 @@
 //
 // Known, intended differences, each checked here rather than ignored:
 //   - GET /api/v1/meta reports API revision 5 instead of 3.
-// What is new (GET /health, GET /api/v1/info, the socket and its routes, and
-// everything under /api/v1/habits) is tested in socket.test.js,
-// claude-session.test.js and habits-api.test.js.
+//   - The dashboard's page and its script (/, /index.html, /app.js) gained the
+//     Habits section. The stylesheet is untouched: habits have their own.
+//   - The MCP server offers the habit tools after the ones it had, and its
+//     instructions end with a paragraph about habits. Every tool it had is
+//     described and behaves exactly as before.
+// What is new (GET /health, GET /api/v1/info, the socket and its routes,
+// everything under /api/v1/habits and /api/habits, and the habit tools) is
+// tested in socket.test.js, claude-session.test.js, habits-api.test.js,
+// habits-dashboard.test.js and habits-mcp.test.js.
 //
 // When a later version changes one of the dashboard's files on purpose, add its
 // path to CHANGED below; it is then compared by status and headers only.
@@ -35,7 +41,7 @@ const hasBaseline = (() => {
 })();
 const skip = !hasBaseline && `needs the ${BASELINE} git tag`;
 
-const CHANGED = new Set(); // dashboard files changed on purpose since the baseline
+const CHANGED = new Set(['/', '/index.html', '/app.js']); // dashboard files changed on purpose since the baseline
 
 // ---------- two servers, old and new, started the same way ----------
 
@@ -416,7 +422,23 @@ test('the MCP server says and does what 1.6.1\'s did', { skip }, async () => {
   const was = await converse(oldRoot, messages);
   const now = await converse(REPO, messages);
   assert.equal(now.answers.length, was.answers.length);
-  for (let i = 0; i < was.answers.length; i++) assert.deepEqual(now.answers[i], was.answers[i], `answer to request ${was.answers[i].id}`);
+  // The two intended differences: what it says about itself, and the tools it lists.
+  const differences = {
+    1: (after, earlier) => {
+      assert.ok(after.result.instructions.startsWith(`${earlier.result.instructions}\n- The user also tracks habits here`), 'the instructions it had, then one more paragraph');
+      assert.deepEqual({ ...after, result: { ...after.result, instructions: earlier.result.instructions } }, earlier);
+    },
+    2: (after, earlier) => {
+      const had = earlier.result.tools.length;
+      assert.deepEqual(after.result.tools.slice(0, had), earlier.result.tools, 'every tool it had, described as before');
+      assert.ok(after.result.tools.length > had && after.result.tools.slice(had).every((t) => t.name.startsWith('habit_')), 'and after them, only habit tools');
+    },
+  };
+  for (let i = 0; i < was.answers.length; i++) {
+    const { id } = was.answers[i];
+    if (differences[id]) differences[id](now.answers[i], was.answers[i]);
+    else assert.deepEqual(now.answers[i], was.answers[i], `answer to request ${id}`);
+  }
   assert.deepEqual(now.data, was.data, 'and the list ends up the same');
   assert.ok(was.answers.some((a) => a.result?.isError) && was.answers.some((a) => a.error), 'failures were exercised too');
 });

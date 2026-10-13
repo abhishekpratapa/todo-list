@@ -205,7 +205,7 @@ test('the same rules of admission as the rest of the API', async () => {
   // With remote access off the port has no API at all, and the socket still has all of it.
   s.remote.setEnabled(false);
   assert.equal((await s.local('GET', '/api/v1/habits', { headers: s.bearer() })).status, 404);
-  assert.equal((await s.local('GET', '/api/habits')).status, 404, 'the dashboard has no route of its own for habits');
+  assert.equal((await s.local('GET', '/api/habits')).body.habits.length, 1, 'the dashboard has routes of its own for habits (see habits-dashboard.test.js)');
   const viaSocket = await cli('GET', '/habits');
   assert.deepEqual([viaSocket.status, viaSocket.body.habits.length], [200, 1]);
   assert.equal((await cli('POST', '/habits/1/checkins', { body: { slot: 'evening' }, headers: { 'x-todos-client': 'todos 0.2.0' } })).body.checkin.via, 'todos 0.2.0');

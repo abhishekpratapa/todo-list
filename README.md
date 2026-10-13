@@ -192,11 +192,24 @@ curl --unix-socket ~/Library/Application\ Support/Todos/todos.sock http://todos/
 
 The check icon in the menu bar shows how many tasks are overdue or due today. Click it to see what's overdue, due today, coming in the next 7 days, and undated, and click a task to open it. **New Task…** opens quick capture. Hide the icon with **Todos → Show in Menu Bar**.
 
+Below the tasks the menu lists the [habits](#habits) still to do today, each with the time of day a click would check in ("Brush teeth · Evening"). **Clicking a habit checks it in**; there is nothing to confirm, and a check-in made by mistake can be taken back in the Todos window. Where a streak hangs on finishing yesterday, that is offered too, under **Still time for yesterday**. Habits are listed but not counted in the number beside the icon or on the Dock: an evening habit is not something to be nagged about all day.
+
 ## Habits
 
 A habit is a routine you check in on: brushing your teeth morning and evening, the gym three times a week. Unlike a repeating task it leaves nothing behind on the board. It keeps a history of check-ins instead, and a streak worked out from them.
 
 Habits are in the API from revision 5 (`/api/v1/habits`, in [`docs/openapi.json`](docs/openapi.json)). The Mac is where they are kept and where every streak is worked out, so every client shows the same numbers.
+
+### On the Mac
+
+- **In the window**, a **Habits** strip sits above the board once you have a habit: what is still to do today first, soonest first, then what is done, then what asks nothing today. Each habit shows how today stands, its streak, and a round button for each time of day. Click a button to check in, and click it again to take that back.
+- **Click a habit** for its panel: the streak now and the best, completion over 7, 30 and 365 days, today and yesterday with who checked in and when, a calendar of the last 26 weeks, **Rest Day** and **Pause**.
+- **Yesterday.** If yesterday was left unfinished and a streak hangs on it, a line at the top of the strip says so and offers yesterday's buttons, until today ends.
+- **When a streak ends**, the habit's panel says how long it ran, what your best is, and that today starts a new one. Nothing more.
+- **The menu bar** lists what is left today and checks a habit in with a click (see [Menu bar](#menu-bar)).
+- **The 9 AM summary** says which habits today asks for, and names any streak that can still be saved by logging yesterday.
+- **Claude** can list your habits and log a check-in when you say you did one (see [MCP tools](#mcp-tools)). It creates or deletes a habit only when you ask it to.
+- Habits are made and edited in the [iPhone app](ios/README.md#habits), or through the API. The Mac window shows them, checks them in, rests and pauses them.
 
 ### What a habit is
 
@@ -225,6 +238,8 @@ Check-ins are only ever added. If your phone and the `todos` command both check 
 
 Habit reminders come from the iPhone: a notification at each time of day's reminder time with **Done** and **Snooze** buttons, a second reminder if it still isn't done, and no reminder at all once you have checked in. How they are scheduled within what iOS allows is in the [iPhone README](ios/README.md#reminders-on-the-iphone).
 
+The Mac stays quiet about habits unless you turn on **Todos → Habit Reminders on This Mac**. With it on, the Mac shows the same reminders at the same times, by its own clock, for whatever is still to do: from a reminder's time until its time of day's hours end (for two hours, where it has none), and each only once. One that came due while the Mac was asleep is shown when it wakes, if it is still in those hours. Clicking one opens the habit. They are plain notifications with no buttons, and like task reminders they need the app to be running.
+
 ### Travel and clock changes
 
 A check-in counts for the date where it was made. Fly east over the date line and the same date comes round twice: it counts once. Fly west and a date is cut short: skip it. "Today" follows the time zone your devices last reported, so every client agrees on the day. Because days are dates and not 24-hour stretches, the spring and autumn clock changes don't affect anything.
@@ -239,13 +254,15 @@ A check-in counts for the date where it was made. Fly east over the date line an
 - **Markdown notes**: notes render as Markdown (headings, bold, lists, task lists, code, quotes) with clickable links. Click the notes or **Edit** to change them. Links in comments are clickable too.
 - **Repeating tasks**: set **Repeat** to daily, every weekday, weekly, every 2 weeks, monthly, or yearly. Completing the task creates the next occurrence with the next due date and a fresh checklist. The finished one stays in Done as history.
 - **Reminders**: set **Remind me** to a date and time to get a Mac notification then. If you get your reminders on the iPhone app instead, turn off **Todos → Reminder Notifications on This Mac** so you aren't reminded twice; the reminder still shows in the Todos window. Click the notification to open the task. Reminders missed while the app was closed arrive when it next opens. Reminders only fire while the app is running, so turn on **Launch at Login** if you rely on them.
-- **Daily summary**: at 9 AM (or when the app first opens after that) you get one notification listing what's due today and overdue. Turn it off with **Todos → Daily Summary at 9 AM**.
+- **Daily summary**: at 9 AM (or when the app first opens after that) you get one notification listing what's due today and overdue, which [habits](#habits) today asks for, and any streak that can still be saved by logging yesterday. Turn it off with **Todos → Daily Summary at 9 AM**.
+- **Habits**: a strip above the board, once you have one. See [Habits, on the Mac](#on-the-mac).
 - **Search**: press `⌘F` or `/`. Press `Esc` to close panels.
 - **Live changes**: cards that Claude changes flash briefly. The activity log shows which session made each change, for example "Claude Code · my-repo" or "Cowork".
 - **Dock badge**: shows how many tasks are overdue or due today.
 - **App menu**:
   - **Todos → Launch at Login**
   - **Todos → Reminder Notifications on This Mac**
+  - **Todos → Habit Reminders on This Mac**: off unless you turn it on, since habit reminders come from the iPhone. See [Reminders](#reminders).
   - **Todos → Daily Summary at 9 AM**
   - **Todos → Send Test Notification**: use this to check that macOS is allowing notifications from Todos. If nothing appears, allow them in System Settings → Notifications → Todos. Reminders also show as a banner inside the app window either way.
   - **Todos → Install Command Line Tool** and **Uninstall Command Line Tool**: see [The `todos` command](#the-todos-command).
@@ -291,6 +308,11 @@ If you move the app somewhere other than `/Applications`, update both paths.
 | `todo_update` | Change fields, add / check off / remove subtasks, and/or post a progress `comment`. |
 | `todo_complete` | Mark one or more todos done, with an optional closing comment. Completing a repeating todo creates its next occurrence. |
 | `todo_delete` | Permanently delete a todo. |
+| `habit_list` | List habits: what is left today, what is done, each one's schedule and streak. |
+| `habit_log` | Check in a habit, today or yesterday. Recorded as made by that Claude session, with the source `claude`. |
+| `habit_undo` | Take back a check-in a Claude session logged. Check-ins you made yourself are left alone. |
+| `habit_add` | Create a habit. Only when you explicitly ask. |
+| `habit_delete` | Permanently delete a habit and its history. Only when you explicitly ask. |
 
 Due dates accept `YYYY-MM-DD`, `today`, `tomorrow`, `yesterday`, `+3d`, `next week`, or a weekday name (`fri`).
 
@@ -305,6 +327,9 @@ The server also gives Claude usage instructions:
 - Comment on progress, and mark the task done when finished.
 - Check off subtasks as it finishes them.
 - Don't fill the list with its own step-by-step work items.
+- Use `habit_list` and `habit_log` for habits, and never create or delete a habit unless you explicitly ask.
+
+Streaks are worked out by Todos, never by Claude: `habit_list` reports them as they are, the same numbers the app and the iPhone show.
 
 You can ask Claude things like:
 
@@ -312,6 +337,8 @@ You can ask Claude things like:
 - "Add a weekly todo to publish the changelog every Friday, and remind me at 10am."
 - "Break #7 into subtasks."
 - "Pick up #12 and check off the subtasks as you go."
+- "I just flossed." / "Log the gym for yesterday."
+- "How are my streaks?"
 
 ## Data
 
@@ -357,5 +384,16 @@ PATCH  /api/todos/:id      { any of the fields above, comment?, add_subtasks?, c
                              uncheck_subtasks?, remove_subtasks?, rename_subtask? }
                            -> { todo, next }   (next = new occurrence of a repeating todo, or null)
 DELETE /api/todos/:id
-GET    /api/events         server-sent events; "change" fires on every write
+GET    /api/events         server-sent events; "change" fires on every write to the tasks,
+                           "habits" on every write to the habits
+
+GET    /api/habits                    -> { habits, left, zone, version }; habits are in the order of
+                                         today's list, each with `group` (due, done, off) and `text`
+                                         (the lines that describe it: progress, schedule, atRisk, ended)
+GET    /api/habits/:id/history?from=&to=   one habit's past, for its calendar
+POST   /api/habits/:id/checkins      { slot?, day? }          check in (day: "yesterday" to log late)
+POST   /api/habits/:id/undo          { slot?, day?, skip? }   take check-ins back, or a rest day
+POST   /api/habits/:id/skips         { day? }                 a rest day
+PATCH  /api/habits/:id               { paused }
+                                      each of the last four -> the list again, as GET /api/habits
 ```

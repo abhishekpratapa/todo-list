@@ -1,4 +1,5 @@
 import { render as renderMarkdown, inline as inlineMarkdown } from '/markdown.js';
+import { createHabits } from '/habits.js';
 
 const STATUSES = [
   { key: 'todo', label: 'To do' },
@@ -131,6 +132,9 @@ async function api(method, url, body) {
   return data;
 }
 
+// The Habits strip above the board and the panel a habit opens in (see habits.js).
+const habits = createHabits({ api, toast, esc, closeTask: () => state.openId !== null && closeDrawer() });
+
 async function refresh() {
   try {
     const data = await api('GET', '/api/todos');
@@ -219,8 +223,10 @@ function connect() {
     live.textContent = 'Live';
     live.title = 'Changes from Claude sessions appear here automatically';
     onVersion(e);
+    habits.refresh();
   });
   es.addEventListener('change', onVersion);
+  es.addEventListener('habits', () => habits.refresh());
   let probed = 0;
   es.onerror = () => {
     live.className = 'live off';
@@ -395,7 +401,7 @@ function renderDrawer() {
     if (state.openId !== null) state.openId = null; // deleted elsewhere
     drawer.classList.remove('open');
     drawer.setAttribute('aria-hidden', 'true');
-    $('#scrim').hidden = true;
+    $('#scrim').hidden = !habits.isOpen();
     return;
   }
   drawer.classList.add('open');
@@ -494,6 +500,7 @@ function editNotes() {
 function openDrawer(id) {
   // Leaving a field saves it against the task that is still open.
   if (state.openId !== id && $('#drawer').contains(document.activeElement)) document.activeElement.blur();
+  habits.close();
   state.editingNotes = false;
   state.openId = id;
   render();
@@ -761,12 +768,16 @@ $('#d-delete').addEventListener('click', async () => {
 });
 
 $('#d-close').addEventListener('click', closeDrawer);
-$('#scrim').addEventListener('click', closeDrawer);
+$('#scrim').addEventListener('click', () => {
+  habits.close();
+  closeDrawer();
+});
 
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
   if (e.key === 'Escape') {
     if (typing) return document.activeElement.blur();
+    if (habits.isOpen()) return habits.close();
     if (state.openId !== null) return closeDrawer();
   }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -789,10 +800,18 @@ window.todos = {
   remind(id, title) {
     toast(`Reminder: ${title}`, { ms: 20_000, onClick: () => window.todos.open(id) });
   },
+  async openHabit(id) {
+    await habits.refresh();
+    habits.open(id);
+  },
 };
 
-// Keep relative timestamps and date-based counts (today/overdue) fresh.
-setInterval(refresh, 60_000);
+// Keep relative timestamps and date-based counts (today/overdue) fresh, and
+// habits too: their day turns over at its own hour.
+setInterval(() => {
+  refresh();
+  habits.refresh();
+}, 60_000);
 
 refresh();
 connect();
