@@ -422,7 +422,7 @@ test('N times a week: the streak is counted in weeks that met the target', () =>
   const { id } = gym(); // Monday 5 October, three times a week
   for (const day of ['2026-10-05', '2026-10-07', '2026-10-09']) check(id, `${day} 18:00`);
   let h = see(id, '2026-10-09 19:00');
-  assert.deepEqual(h.week, { start: '2026-10-05', state: 'met', count: 3, target: 3, days: ['2026-10-05', '2026-10-07', '2026-10-09'] });
+  assert.deepEqual(h.week, { start: '2026-10-05', state: 'met', count: 3, target: 3, days: ['2026-10-05', '2026-10-07', '2026-10-09'], whole: true });
   assert.equal(h.lastWeek, null, 'it began this week');
   assert.deepEqual([h.streak.current, h.streak.unit, h.today.done], [1, 'weeks', true]);
 
@@ -438,7 +438,7 @@ test('N times a week: the streak is counted in weeks that met the target', () =>
   h = see(id, '2026-10-19 10:00');
   assert.deepEqual(h.streak.atRisk, { day: '2026-10-18', week: '2026-10-12', missing: [], until: new Date(at('2026-10-20 03:00')).toISOString() });
   assert.deepEqual([h.week.start, h.week.count], ['2026-10-19', 0]);
-  assert.deepEqual(h.lastWeek, { start: '2026-10-12', state: 'open', count: 2, target: 3, days: ['2026-10-12', '2026-10-13'] });
+  assert.deepEqual(h.lastWeek, { start: '2026-10-12', state: 'open', count: 2, target: 3, days: ['2026-10-12', '2026-10-13'], whole: true });
   const saved = check(id, '2026-10-19 10:05', { day: 'yesterday' });
   assert.equal(saved.habit.lastWeek.state, 'met');
   assert.deepEqual([saved.checkin.day, saved.checkin.slot, saved.checkin.backfilled], ['2026-10-18', null, true]);
@@ -465,6 +465,7 @@ test('N times a week: the week a habit begins in counts if it is met and is held
   const late = gym('2026-10-08 06:00'); // a Thursday
   check(late.id, '2026-10-09 18:00');
   for (const day of ['2026-10-12', '2026-10-14', '2026-10-16']) check(late.id, `${day} 18:00`);
+  assert.equal(see(late.id, '2026-10-09 19:00').week.whole, false, 'a week it began partway through');
   let h = see(late.id, '2026-10-21 10:00');
   assert.deepEqual([h.streak.current, h.streak.previous], [1, null], 'one check-in in a three-day first week is not a miss');
 

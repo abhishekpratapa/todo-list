@@ -144,21 +144,43 @@ export function mutate(fn) {
   }
 }
 
-// Calls onChange() (debounced) whenever the data file is replaced. Returns an unsubscribe function.
-export function watchStore(onChange) {
-  const dir = path.dirname(DATA_FILE);
+// One watcher per folder, however many of its files are being watched: the system
+// only has so many to give, and the todo list and the habits live side by side.
+const watched = new Map(); // folder -> { watcher, listeners: Set of { name, changed } }
+
+// Calls onChange() (debounced) whenever `file` is replaced. Returns an unsubscribe function.
+export function watchFile(file, onChange) {
+  const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
+  let folder = watched.get(dir);
+  if (!folder) {
+    const listeners = new Set();
+    const watcher = fs.watch(dir, (_event, filename) => {
+      for (const listener of listeners) if (!filename || filename === listener.name) listener.changed();
+    });
+    folder = { watcher, listeners };
+    watched.set(dir, folder);
+  }
   let timer;
-  const watcher = fs.watch(dir, (_event, filename) => {
-    if (filename && filename !== path.basename(DATA_FILE)) return;
-    clearTimeout(timer);
-    timer = setTimeout(onChange, 40);
-  });
+  const listener = {
+    name: path.basename(file),
+    changed: () => {
+      clearTimeout(timer);
+      timer = setTimeout(onChange, 40);
+    },
+  };
+  folder.listeners.add(listener);
   return () => {
     clearTimeout(timer);
-    watcher.close();
+    folder.listeners.delete(listener);
+    if (folder.listeners.size) return;
+    folder.watcher.close();
+    watched.delete(dir);
   };
 }
+
+// Calls onChange() (debounced) whenever the data file is replaced. Returns an unsubscribe function.
+export const watchStore = (onChange) => watchFile(DATA_FILE, onChange);
 
 // ---------- dates ----------
 

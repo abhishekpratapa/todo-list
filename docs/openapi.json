@@ -4852,6 +4852,10 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "whole": {
+                "type": "boolean",
+                "description": "False for a week the habit began or was paused in. Such a week counts if it was met and is held against no one if not."
               }
             }
           },
@@ -4885,6 +4889,10 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "whole": {
+                    "type": "boolean",
+                    "description": "False for a week the habit began or was paused in. Such a week counts if it was met and is held against no one if not."
                   }
                 }
               },

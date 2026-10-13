@@ -28,10 +28,29 @@ public struct CachedList: Codable, Sendable, Equatable {
     }
 }
 
+/// The habits as the Mac last sent them.
+public struct CachedHabits: Codable, Sendable, Equatable {
+    public var habits: [Habit] = []
+    /// The Mac's version of its habits when they were fetched.
+    public var version: Int?
+    /// The time zone the Mac was telling "today" by.
+    public var zone: String?
+    public var syncedAt: Date?
+    /// False once the Mac has said it has no habits at all: its Todos is older than they are.
+    public var supported: Bool?
+
+    public init() {}
+}
+
 public actor LocalStore {
     struct CacheFile: Codable {
         var schema: Int
         var list: CachedList
+    }
+
+    struct HabitsFile: Codable {
+        var schema: Int
+        var habits: CachedHabits
     }
 
     /// Raised whenever the cache's shape changes. An older cache is thrown away and fetched again; waiting changes are never thrown away.
@@ -40,8 +59,10 @@ public actor LocalStore {
     private let directory: URL
     private let outbox: URL
     private let cacheFile: URL
+    private let habitsFile: URL
 
     public private(set) var list = CachedList()
+    public private(set) var habits = CachedHabits()
     /// Waiting changes, in the order they were made.
     public private(set) var changes: [PendingChange] = []
     /// Where each waiting change is on disk.
@@ -53,10 +74,58 @@ public actor LocalStore {
         outbox = directory.appendingPathComponent("outbox", isDirectory: true)
         cacheFile = directory.appendingPathComponent("list.json")
         try? FileManager.default.createDirectory(at: outbox, withIntermediateDirectories: true)
+        habitsFile = directory.appendingPathComponent("habits.json")
         if let data = try? Data(contentsOf: cacheFile), let file = try? HubJSON.decoder().decode(CacheFile.self, from: data), file.schema == Self.schema {
             list = file.list
         }
+        habits = Self.readHabits(at: habitsFile)
         (changes, files) = Self.readChanges(in: outbox)
+    }
+
+    // MARK: Habits
+
+    /// Replaces the habits with fresh ones from the Mac.
+    public func replaceHabits(_ fresh: [Habit], version: Int?, zone: String?, syncedAt: Date = Date()) {
+        habits.habits = fresh
+        habits.version = version
+        habits.zone = zone
+        habits.syncedAt = syncedAt
+        habits.supported = true
+        saveHabits()
+    }
+
+    /// Stores one habit as the Mac just returned it, after a check-in or an edit.
+    public func keep(_ habit: Habit) {
+        if let index = habits.habits.firstIndex(where: { $0.id == habit.id }) {
+            habits.habits[index] = habit
+        } else {
+            habits.habits.append(habit)
+        }
+        habits.habits.removeAll(where: \.archived)
+        saveHabits()
+    }
+
+    public func forget(habit id: Int) {
+        habits.habits.removeAll { $0.id == id }
+        saveHabits()
+    }
+
+    /// The Mac has no habits at all: its Todos is older than they are.
+    public func habitsUnsupported() {
+        guard habits.supported != false else { return }
+        habits = CachedHabits()
+        habits.supported = false
+        saveHabits()
+    }
+
+    private func saveHabits() {
+        guard let data = try? HubJSON.encoder().encode(HabitsFile(schema: Self.schema, habits: habits)) else { return }
+        try? data.write(to: habitsFile, options: Self.writing)
+    }
+
+    static func readHabits(at file: URL) -> CachedHabits {
+        guard let data = try? Data(contentsOf: file), let stored = try? HubJSON.decoder().decode(HabitsFile.self, from: data), stored.schema == schema else { return CachedHabits() }
+        return stored.habits
     }
 
     // MARK: The list
@@ -188,6 +257,8 @@ public actor LocalStore {
     /// Removes everything: the list and every waiting change. For unpairing.
     public func erase() {
         try? FileManager.default.removeItem(at: cacheFile)
+        try? FileManager.default.removeItem(at: habitsFile)
+        habits = CachedHabits()
         try? FileManager.default.removeItem(at: outbox)
         try? FileManager.default.createDirectory(at: outbox, withIntermediateDirectories: true)
         list = CachedList()

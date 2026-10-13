@@ -75,20 +75,28 @@ public enum HubEvent: Sendable, Equatable {
     case hello(version: Int)
     /// Something in the list changed.
     case change(version: Int)
+    /// A habit or a check-in changed. `version` is the habits' own, not the list's.
+    case habits(version: Int)
 
     init?(_ message: SSEParser.Message) {
-        struct Payload: Decodable { var version: Int }
-        guard let version = (try? JSONDecoder().decode(Payload.self, from: Data(message.data.utf8)))?.version else { return nil }
+        struct Payload: Decodable {
+            var version: Int
+            var habits: Int?
+        }
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: Data(message.data.utf8)) else { return nil }
         switch message.event {
-        case "hello": self = .hello(version: version)
-        case "change": self = .change(version: version)
+        case "hello": self = .hello(version: payload.version)
+        case "change": self = .change(version: payload.version)
+        case "habits":
+            guard let habits = payload.habits else { return nil }
+            self = .habits(version: habits)
         default: return nil
         }
     }
 
     public var version: Int {
         switch self {
-        case .hello(let version), .change(let version): version
+        case .hello(let version), .change(let version), .habits(let version): version
         }
     }
 }
@@ -139,6 +147,8 @@ public enum LiveState: Sendable, Equatable {
     case live(version: Int)
     /// The list changed while connected.
     case changed(version: Int)
+    /// A habit or a check-in changed while connected. `version` is the habits' own.
+    case habitsChanged(version: Int)
     /// The connection was lost or refused. Another attempt follows after `retryIn` seconds.
     case waiting(HubError, retryIn: TimeInterval)
     /// The token no longer works. Nothing more is tried: wrong tokens are rate limited, and only pairing again can fix it.
@@ -169,6 +179,7 @@ public struct LiveUpdates: Sendable {
                             switch event {
                             case .hello(let version): continuation.yield(.live(version: version))
                             case .change(let version): continuation.yield(.changed(version: version))
+                            case .habits(let version): continuation.yield(.habitsChanged(version: version))
                             }
                         }
                     } catch HubError.unauthorized {

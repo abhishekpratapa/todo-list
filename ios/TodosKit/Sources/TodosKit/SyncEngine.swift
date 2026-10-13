@@ -119,6 +119,36 @@ public struct SyncEngine: Sendable {
 
         case .removeSubtask(let task, let subtask):
             try await sendSubtask(change, task: task) { try await client.removeSubtask(task, subtask: subtask, key: change.id) }
+
+        // Habits. The Mac is told when and where each was tapped, and judges it as of
+        // then. A day is only named when it is yesterday being logged late.
+        case .checkIn(let habit, _, let slot, let day, let at, let zone, let source, let backfilled):
+            try await sendHabit(change) { try await client.checkIn(habit, slot: slot, at: at, zone: zone, day: backfilled ? day : nil, source: source, key: change.id).habit }
+
+        case .undoCheckIn(let habit, _, _, _, let checkins, let keys, let at):
+            try await sendHabit(change) { try await client.undoCheckIns(habit, checkins: checkins, keys: keys, at: at, key: change.id) }
+
+        case .skipHabit(let habit, _, let day, let at, let zone, let reason):
+            try await sendHabit(change) { try await client.skip(habit, day: day, at: at, zone: zone, reason: reason, key: change.id).habit }
+
+        case .undoSkip(let habit, _, let day, let at, let zone):
+            try await sendHabit(change) { try await client.undoSkip(habit, day: day, at: at, zone: zone, key: change.id) }
+        }
+    }
+
+    /// A check-in, a skip, or one of them taken back. None can conflict: they are only
+    /// ever added. What can go wrong for good is the habit being gone, or a rule
+    /// refusing it (too late, too many skips), and then the Mac's own words are kept
+    /// with the change for the user to read.
+    private func sendHabit(_ change: PendingChange, _ request: () async throws -> Habit) async throws {
+        do {
+            await store.keep(try await request())
+            await store.remove(change: change.id)
+        } catch HubError.notFound {
+            if let habit = change.habitID { await store.forget(habit: habit) }
+            _ = await store.replace(change, with: change.kind, state: .rejected(message: "“\(change.habitName ?? "That habit")” was deleted on your Mac."))
+        } catch let error as HubError where error.isAboutThisChange {
+            await setAside(change, error)
         }
     }
 
@@ -225,6 +255,19 @@ public struct SyncEngine: Sendable {
         return await store.list
     }
 
+    /// Fetches the habits and stores them. A Mac whose Todos is older than habits has
+    /// none of this and answers 404: that is remembered, and is not an error.
+    @discardableResult
+    public func refreshHabits() async throws -> CachedHabits {
+        do {
+            let fresh = try await client.habits()
+            await store.replaceHabits(fresh.habits, version: fresh.version, zone: fresh.zone)
+        } catch HubError.notFound {
+            await store.habitsUnsupported()
+        }
+        return await store.habits
+    }
+
     /// Fetches one task with its history and stores it.
     @discardableResult
     public func fetch(_ id: Int) async throws -> TodoTask? {
@@ -250,7 +293,7 @@ extension HubError {
     /// as opposed to not being reachable or refusing everything.
     var isAboutThisChange: Bool {
         switch self {
-        case .notFound, .invalid, .preconditionRequired, .conflict: true
+        case .notFound, .invalid, .preconditionRequired, .conflict, .habitConflict: true
         default: false
         }
     }

@@ -72,4 +72,9 @@ extension LocalStore {
         }
         return (list, changes)
     }
+
+    /// Reads the habits the same way.
+    public static func readHabits(directory: URL) -> CachedHabits {
+        readHabits(at: directory.appendingPathComponent("habits.json"))
+    }
 }

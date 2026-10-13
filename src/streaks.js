@@ -203,8 +203,9 @@ function daySummary(habit, index, today, zone) {
 
 // ---------- habits counted in weeks ----------
 
-// One week, named by its Monday: { state, count, target, days }, where `days`
-// are the days with a check-in. More than one check-in on a day counts once.
+// One week, named by its Monday: { state, count, target, days, whole }, where
+// `days` are the days with a check-in (more than one check-in on a day counts
+// once) and `whole` is false for a week the habit began or was paused in.
 //   met      enough days
 //   skipped  a rest week, and not met anyway
 //   open     not met, and still loggable (this week, or last week until Monday ends)
@@ -228,7 +229,7 @@ export function weekState(habit, index, week, today) {
   else if (index.skips.has(week)) state = 'skipped';
   else if (today <= addDays(week, 7)) state = 'open';
   else state = active === 7 ? 'missed' : 'off';
-  return { state, count, target, days };
+  return { state, count, target, days, whole: active === 7 };
 }
 
 function weekSummary(habit, index, today, zone) {
@@ -257,7 +258,7 @@ function weekSummary(habit, index, today, zone) {
   }
 
   const day = (d) => ({ day: d, done: !!index.done.get(d)?.size, checkins: [...(index.done.get(d)?.values() ?? [])].flat() });
-  const week = (item) => ({ start: item.key, state: item.state, count: item.count, target: item.target, days: item.days });
+  const week = (item) => ({ start: item.key, state: item.state, count: item.count, target: item.target, days: item.days, whole: item.whole });
   const current = items[items.length - 1];
   return {
     today: day(today),

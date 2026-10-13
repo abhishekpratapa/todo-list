@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_FILE, ConflictError, NotFoundError, TodoError, nowMs, withLock } from './store.js';
+import { DATA_FILE, ConflictError, NotFoundError, TodoError, nowMs, watchFile, withLock } from './store.js';
 import {
   SKIP_LIMITS, SKIP_WEEKS,
   addDays, calendar, dayState, habitDay, indexEvents, isWeekly, isZone, localParts, skipRoom, summarize, weekStart, weekState,
@@ -132,20 +132,7 @@ export function habitsState() {
 }
 
 // Calls onChange() (debounced) whenever the habit file is replaced. Returns an unsubscribe function.
-export function watchHabits(onChange) {
-  const dir = path.dirname(HABITS_FILE);
-  fs.mkdirSync(dir, { recursive: true });
-  let timer;
-  const watcher = fs.watch(dir, (_event, filename) => {
-    if (filename && filename !== path.basename(HABITS_FILE)) return;
-    clearTimeout(timer);
-    timer = setTimeout(onChange, 40);
-  });
-  return () => {
-    clearTimeout(timer);
-    watcher.close();
-  };
-}
+export const watchHabits = (onChange) => watchFile(HABITS_FILE, onChange);
 
 // ---------- validation ----------
 

@@ -25,6 +25,16 @@ public struct PendingChange: Codable, Sendable, Identifiable, Equatable {
         case restore(task: TodoTask)
         /// A new task with a title and notes exactly as given, not parsed as a line: what the share sheet adds.
         case add(title: String, notes: String)
+        /// A habit, or one slot of it, checked in. `day` is the habit day it is for; `at`
+        /// and `zone` are when and where it was tapped, so the Mac can judge it as of then.
+        /// `name` is the habit's, for saying what is waiting.
+        case checkIn(habit: Int, name: String, slot: String?, day: Day, at: Date, zone: String, source: HabitSource, backfilled: Bool)
+        /// Check-ins taken back: ones the Mac has (`checkins`) and ones made here that it
+        /// may not have yet (`keys`, the ids of those changes).
+        case undoCheckIn(habit: Int, name: String, slot: String?, day: Day, checkins: [Int], keys: [UUID], at: Date)
+        /// A rest day (for a habit counted in weeks, a rest week).
+        case skipHabit(habit: Int, name: String, day: Day, at: Date, zone: String, reason: String?)
+        case undoSkip(habit: Int, name: String, day: Day, at: Date, zone: String)
     }
 
     public enum State: Codable, Sendable, Equatable {
@@ -55,9 +65,27 @@ public struct PendingChange: Codable, Sendable, Identifiable, Equatable {
     /// The task this change is for. Nil for a capture, which makes a new one.
     public var taskID: Int? {
         switch kind {
-        case .capture, .restore, .add: nil
+        case .capture, .restore, .add, .checkIn, .undoCheckIn, .skipHabit, .undoSkip: nil
         case .update(let task, _, _, _), .complete(let task), .delete(let task, _), .comment(let task, _),
              .addSubtask(let task, _, _), .setSubtask(let task, _, _), .renameSubtask(let task, _, _), .removeSubtask(let task, _): task
+        }
+    }
+
+    /// The habit this change is for, if it is about a habit.
+    public var habitID: Int? {
+        switch kind {
+        case .checkIn(let habit, _, _, _, _, _, _, _), .undoCheckIn(let habit, _, _, _, _, _, _),
+             .skipHabit(let habit, _, _, _, _, _), .undoSkip(let habit, _, _, _, _): habit
+        default: nil
+        }
+    }
+
+    /// The habit's name, as it was when the change was made.
+    public var habitName: String? {
+        switch kind {
+        case .checkIn(_, let name, _, _, _, _, _, _), .undoCheckIn(_, let name, _, _, _, _, _),
+             .skipHabit(_, let name, _, _, _, _), .undoSkip(_, let name, _, _, _): name
+        default: nil
         }
     }
 
@@ -86,6 +114,10 @@ public struct PendingChange: Codable, Sendable, Identifiable, Equatable {
         case .removeSubtask: "Remove a subtask"
         case .restore(let task): "Put back “\(task.title)”"
         case .add(let title, _): "Add “\(title)”"
+        case .checkIn(_, _, let slot, _, _, _, _, let backfilled): "Check in\(slot.map { " (\($0))" } ?? "")\(backfilled ? " for yesterday" : "")"
+        case .undoCheckIn: "Undo a check-in"
+        case .skipHabit: "Skip a day"
+        case .undoSkip: "Undo a skipped day"
         }
     }
 }
@@ -96,7 +128,7 @@ extension TodoTask {
     func applying(_ change: PendingChange, clientName: String) -> TodoTask? {
         var task = self
         switch change.kind {
-        case .capture, .restore, .add:
+        case .capture, .restore, .add, .checkIn, .undoCheckIn, .skipHabit, .undoSkip:
             break
         case .update(_, _, _, let patch):
             task = patch.applied(to: task)

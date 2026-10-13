@@ -111,6 +111,44 @@ final class TestHub: @unchecked Sendable {
         get throws { try command("version")["version"] as? Int ?? -1 }
     }
 
+    // MARK: Habits on the Mac
+
+    // Each takes `at`: the moment to do it as of. The server's clock is pinned to it, so
+    // a test can make something have happened days ago, or ask what the Mac would have said then.
+
+    private func decoded<T: Decodable>(_ type: T.Type, _ value: Any?) throws -> T {
+        try HubJSON.decoder().decode(T.self, from: JSONSerialization.data(withJSONObject: value ?? [:]))
+    }
+
+    private func timed(_ arguments: [String: Any], _ at: Date?) -> [String: Any] {
+        at.map { arguments.merging(["at": HubJSON.string(from: $0)]) { $1 } } ?? arguments
+    }
+
+    func habitZone(_ zone: String, at: Date? = nil) throws {
+        try command("habits.zone", timed(["zone": zone], at))
+    }
+
+    @discardableResult
+    func habitCreate(_ input: [String: Any], at: Date? = nil) throws -> Habit {
+        try decoded(Habit.self, command("habits.create", timed(["input": input], at))["habit"])
+    }
+
+    @discardableResult
+    func habitUpdate(_ id: Int, _ patch: [String: Any], at: Date? = nil) throws -> Habit {
+        try decoded(Habit.self, command("habits.update", timed(["id": id, "patch": patch], at))["habit"])
+    }
+
+    /// A check-in made on the Mac itself: in the app, or by a Claude session through the MCP server.
+    @discardableResult
+    func habitCheckIn(_ id: Int, _ input: [String: Any] = [:], at: Date? = nil, by: String = "me") throws -> Habit {
+        try decoded(Habit.self, command("habits.checkin", timed(["id": id, "input": input, "by": by], at))["habit"])
+    }
+
+    /// The habits as the Mac would show them at that moment.
+    func habits(at: Date? = nil) throws -> [Habit] {
+        try decoded([Habit].self, command("habits.list", timed([:], at))["habits"])
+    }
+
     // MARK: Clients
 
     /// The headers `tailscale serve` adds when it relays a request from a device on the tailnet.

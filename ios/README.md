@@ -2,7 +2,7 @@
 
 A native iPhone app for the list kept by the Todos app on your Mac. The Mac stays the only copy: the iPhone reaches it over your Tailscale tailnet, through the same `/api/v1` any other client uses (`docs/openapi.json`).
 
-It does pairing, the task list and detail, editing, quick capture and live updates, and it keeps working without a connection: the list is kept on the iPhone, and changes made offline are sent when the Mac can be reached again. It also has reminders as notifications on the iPhone, a widget, a Shortcuts action (for Siri and the Action button too) and a share sheet extension.
+It does pairing, the task list and detail, editing, quick capture, habits with streaks, and live updates, and it keeps working without a connection: the list is kept on the iPhone, and changes made offline are sent when the Mac can be reached again. It also has reminders as notifications on the iPhone, a widget, a Shortcuts action (for Siri and the Action button too) and a share sheet extension.
 
 ```
 Todos.xcodeproj   the Xcode project (app and its tests)
@@ -13,7 +13,8 @@ TodosTests/       tests that run inside the app: Keychain storage, pairing, offl
 TodosKit/         a Swift package with everything that has no user interface:
                   the API client, live updates, pairing codes, Keychain storage,
                   the list kept on disk, the queue of changes and how it is sent
-                  and merged, version checks, connection diagnosis, Markdown
+                  and merged, version checks, connection diagnosis, Markdown,
+                  habits and the phone's own reckoning of them between syncs
 Config/           entitlements and Info.plist additions for the app and its two extensions
 scripts/          install.sh, test.sh, simulator.sh, and the Todos server the tests run against
 ```
@@ -100,6 +101,18 @@ The token is checked against the Mac before it is kept, and then stored in the i
 - **Start with Claude** is only in the Mac app, so it isn't shown here. You can still assign a task to Claude.
 - Your changes appear in a task's history on the Mac as "You · iPhone".
 
+### Habits
+
+The **Habits** tab is for routines you check in on: brushing your teeth morning and evening, the gym three times a week. What a habit is, and exactly how streaks, late logging, rest days and pauses work, is in the [main README](../README.md#habits); the Mac keeps the record and works the streaks out. Habits need the Todos on your Mac to speak API revision 5. With an older one the tab says so, and tasks work as before.
+
+- **Today.** What is still to do comes first, soonest first, then what is done, then what expects nothing today. Each habit shows its streak (a flame and a number) and a round button for each time of day. **Tap a button to check in; tap it again to take it back.** The tab's badge counts what is left today.
+- **Yesterday.** If yesterday was left unfinished and a streak hangs on it, it is offered at the top, where it can be logged until today ends.
+- **A habit.** Tap its name for the streak and the best one, today and yesterday, a calendar of the last 18 weeks, completion over 7, 30 and 365 days, and **Skip Today**, **Pause**, **Archive** and **Delete**. The calendar is drawn from the Mac's record, so it needs the Mac to be reachable.
+- **New habit.** The **+** button offers Twice a Day, Every Day and 3 Times a Week, and opens a form already filled in: name, emoji and color, when it repeats, each time of day with its reminder time, the hours it belongs in and an optional second reminder, and when the habit's day starts (3 AM unless you change it).
+- **Offline.** Check-ins, taking one back, and rest days all work with no connection. They show at once, with the streak they will give, and are sent in order when the Mac can be reached; each says when and where it was really made, so one made on Monday and delivered on Thursday is Monday's. If days go by with no connection, the phone works out for itself how the days in between went, by the same rules as the Mac, and the Mac's answer replaces that the next time it is reached.
+- **What needs the Mac.** Making, editing, pausing, archiving and deleting a habit. If the Mac can't be reached you are told so, and nothing is queued: a habit the Mac hasn't accepted has nothing useful to show.
+- **Travel.** A check-in counts for the date where you are. The app tells the Mac which time zone the phone is in whenever it differs, so "today" follows you.
+
 ### Reminders on the iPhone
 
 Turn on **Settings → Reminders on This iPhone** in the app (the gear at the top left) and allow notifications when iOS asks. From then on, every reminder in your list is scheduled on the iPhone itself, so it arrives even when your Mac is asleep or out of reach. Tapping one opens its task.
@@ -171,8 +184,8 @@ ios/scripts/test.sh
 
 That runs two things:
 
-1. **TodosKit** with `swift test`, on the Mac. The unit tests cover the API client, version checks, live-update parsing, pairing codes, connection diagnosis, list grouping, Markdown, the list kept on disk, the queue of changes and its replay, and conflict detection and merging. The integration tests start a real Todos server (`ios/scripts/test-server.mjs`, the Mac app's own server code) and cover CRUD, quick capture, live updates, conflicts, a revoked token, remote access being off and the wrong Tailscale account. They also cover offline use: an edit made offline while the Mac edits the same task ends with nothing lost, a line captured offline is read as of when it was typed and added once even if sent twice, and changes keep waiting through a rotated token or an unreachable Mac.
-2. **The app's tests** in the iOS Simulator: Keychain storage (including the group shared with the share extension), pairing, opening with no connection, changes made offline and sent later, conflicts and how they are settled, unpairing, tasks added by a Shortcut or the share sheet, and what the widget and reminders are given.
+1. **TodosKit** with `swift test`, on the Mac. The unit tests cover the API client, version checks, live-update parsing, pairing codes, connection diagnosis, list grouping, Markdown, the list kept on disk, the queue of changes and its replay, conflict detection and merging, and habits: what the Mac sends, what is sent back, the habit day across time zones and clock changes, and the phone's own reckoning. The integration tests start a real Todos server (`ios/scripts/test-server.mjs`, the Mac app's own server code) and cover CRUD, quick capture, live updates, conflicts, a revoked token, remote access being off and the wrong Tailscale account. They also cover offline use: an edit made offline while the Mac edits the same task ends with nothing lost, a line captured offline is read as of when it was typed and added once even if sent twice, and changes keep waiting through a rotated token or an unreachable Mac. For habits, they hold the phone's own reckoning to the Mac's: the phone is given what the Mac said on some day, makes check-ins "offline" over the days and weeks that follow, and at each point its answer (today, yesterday, the streak, what is at risk) must be what the real server says at that same moment once those changes reach it. The server's clock is pinned for each question, so the days are whatever the test says.
+2. **The app's tests** in the iOS Simulator: Keychain storage (including the group shared with the share extension), pairing, opening with no connection, changes made offline and sent later, conflicts and how they are settled, unpairing, tasks added by a Shortcut or the share sheet, what the widget and reminders are given, and habits: checking in with and without a connection, taking a check-in back, rest days, a Mac too old to have habits, and making and changing a habit.
 
 The integration tests never touch your real list. The server they start uses a data directory created fresh in the system's temporary folder and deleted afterwards, with its own access token.
 

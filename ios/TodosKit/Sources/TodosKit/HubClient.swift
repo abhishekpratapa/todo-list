@@ -203,7 +203,7 @@ public struct HubClient: Sendable {
         return request
     }
 
-    private func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
+    func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
         try decode(await send("GET", path, query: query).data)
     }
 
@@ -215,7 +215,7 @@ public struct HubClient: Sendable {
         try decode(await send(method, path, body: body, headers: headers).data)
     }
 
-    private func decode<T: Decodable>(_ data: Data) throws -> T {
+    func decode<T: Decodable>(_ data: Data) throws -> T {
         do {
             return try HubJSON.decoder().decode(T.self, from: data)
         } catch {

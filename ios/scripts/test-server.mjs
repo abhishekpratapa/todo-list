@@ -14,6 +14,12 @@
 //   {"cmd":"enabled","on":false}             the remote access switch
 //   {"cmd":"listening","on":false}           stop answering altogether, as when the Mac is asleep
 //   {"cmd":"version"}                        the list's current version
+//   {"cmd":"habits.create","input":{...}}    {"cmd":"habits.update","id":1,"patch":{...}}
+//   {"cmd":"habits.checkin","id":1,"input":{...},"by":"Claude Code · repo"}   a check-in made on the Mac
+//   {"cmd":"habits.list"}                    {"cmd":"habits.zone","zone":"America/Chicago"}
+//
+// The habits commands take "at": a timestamp to pin the clock to, so a test can
+// make something have happened days ago, or ask what the Mac would have said then.
 //
 // It exits when standard input closes, so a test run that dies takes it along.
 
@@ -29,9 +35,11 @@ process.env.TODO_DATA_FILE = path.join(dir, 'data', 'todos.json'); // must be se
 process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
 const store = await import(path.join(repo, 'src', 'store.js'));
+const habits = await import(path.join(repo, 'src', 'habits.js'));
 const { startServer } = await import(path.join(repo, 'src', 'server.js'));
 const { createRemote } = await import(path.join(repo, 'src', 'remote.js'));
 if (!store.DATA_FILE.startsWith(dir + path.sep)) throw new Error('Refusing to run: the data file is not in the temporary folder.');
+if (!habits.HABITS_FILE.startsWith(dir + path.sep)) throw new Error('Refusing to run: the habits file is not in the temporary folder.');
 
 // What a device on the tailnet looks like once `tailscale serve` has relayed it.
 // Tests send these headers to be treated as the iPhone rather than as a script on the Mac.
@@ -48,7 +56,15 @@ const { port } = server;
 const say = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 say({ ready: true, port, token: remote.token, tailnet: TAILNET, owner: OWNER });
 
+// Runs fn as if it were the moment the command names, or now.
+const at = (message, fn) => (message.at ? store.withClock(Date.parse(message.at), fn) : fn());
+
 const commands = {
+  'habits.create': (m) => ({ habit: at(m, () => habits.createHabit(m.input, m.by ?? 'me')) }),
+  'habits.update': (m) => ({ habit: at(m, () => habits.updateHabit(m.id, m.patch)) }),
+  'habits.checkin': (m) => at(m, () => habits.checkIn(m.id, m.input ?? {}, m.by ?? 'me', { via: m.via })),
+  'habits.list': (m) => at(m, () => habits.listHabits()),
+  'habits.zone': (m) => at(m, () => habits.setZone(m.zone)),
   'mac.update': ({ id, patch, by = 'me' }) => ({ task: store.updateTodo(id, patch, by).todo }),
   'mac.create': ({ input, by = 'me' }) => ({ task: store.createTodo(input, by) }),
   'mac.delete': ({ id }) => ({ task: store.deleteTodo(id) }),

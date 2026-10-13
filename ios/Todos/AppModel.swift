@@ -1,5 +1,5 @@
-// The app's state: whether this iPhone is paired, the task list, the connection to
-// the Mac, and every change the screens can make.
+// The app's state: whether this iPhone is paired, the task list, the habits, the
+// connection to the Mac, and every change the screens can make.
 //
 // The list on screen is what the Mac last sent (kept on disk, so the app opens at
 // once and can be read offline) with this iPhone's own changes on top. Every
@@ -33,6 +33,11 @@ final class AppModel {
 
     /// The list as shown: what the Mac last sent, with this iPhone's waiting changes on top.
     private(set) var tasks: [TodoTask] = []
+    /// The habits as shown: what the Mac last sent, with this iPhone's waiting check-ins on
+    /// top and the days since then reckoned here (see TodosKit's HabitReckoning).
+    private(set) var habits: [Habit] = []
+    /// False when the Todos on the Mac is too old to have habits. Nil until it has said.
+    private(set) var habitsSupported: Bool?
     /// Changes made here that the Mac hasn't accepted yet, in the order they were made.
     private(set) var changes: [PendingChange] = []
     /// False until there is a list to show: fetched just now, or kept from last time.
@@ -52,6 +57,8 @@ final class AppModel {
     var isShowingSync = false
     /// A task to open: set when a reminder or the widget is tapped.
     var requestedTask: Int?
+    /// A habit to open, likewise.
+    var requestedHabit: Int?
 
     @ObservationIgnored private let credentials: any CredentialStore
     @ObservationIgnored private let makeClient: (HubCredentials) -> HubClient
@@ -61,6 +68,7 @@ final class AppModel {
     @ObservationIgnored private var store: LocalStore?
     @ObservationIgnored private var engine: SyncEngine?
     @ObservationIgnored private var list = CachedList()
+    @ObservationIgnored private var cachedHabits = CachedHabits()
     @ObservationIgnored private var live: Task<Void, Never>?
     @ObservationIgnored private var sending: Task<Void, Never>?
     @ObservationIgnored private var sendAgain = false
@@ -163,8 +171,11 @@ final class AppModel {
         address = nil
         macVersion = nil
         list = CachedList()
+        cachedHabits = CachedHabits()
         changes = []
         tasks = []
+        habits = []
+        habitsSupported = nil
         hasLoaded = false
         lastSynced = nil
         issue = nil
@@ -240,6 +251,7 @@ final class AppModel {
                 guard self.engine?.client.address == engine.client.address else { return } // unpaired meanwhile
                 if issue?.mayClearByItself == true { issue = nil }
                 log.info("list loaded: \(fetched.tasks.count, privacy: .public) tasks")
+                try await loadHabits(with: engine)
                 await reload()
             } catch {
                 await reload()
@@ -283,6 +295,8 @@ final class AppModel {
             if !compatibilityChecked || !hasLoaded || version != list.version || changes.contains(where: \.isWaiting) { await sync() }
         case .changed(let version):
             if version != list.version { await refresh() }
+        case .habitsChanged(let version):
+            if version != cachedHabits.version { await refreshHabits() }
         case .waiting(let error, _):
             isLive = false
             log.info("live updates waiting: \(error.logName, privacy: .public)")
@@ -299,7 +313,7 @@ final class AppModel {
         guard let error = error as? HubError else { return } // cancellation
         log.error("request failed: \(error.logName, privacy: .public)")
         switch error {
-        case .transport(.cancelled), .conflict, .preconditionRequired, .notFound, .invalid:
+        case .transport(.cancelled), .conflict, .habitConflict, .preconditionRequired, .notFound, .invalid:
             break // not about the connection
         case .rateLimited where hasLoaded:
             break // the queue waits and carries on by itself
@@ -340,7 +354,7 @@ final class AppModel {
 
     /// New tasks on their way to the Mac: captured lines, and tasks being put back.
     var waitingAdditions: [PendingChange] {
-        waiting.filter { $0.taskID == nil }
+        waiting.filter { $0.taskID == nil && $0.habitID == nil }
     }
 
     func hasWaitingChanges(_ task: Int) -> Bool {
@@ -351,8 +365,9 @@ final class AppModel {
         changes.contains { $0.taskID == task && $0.needsAttention }
     }
 
-    /// The title of the task a change is for, as this iPhone knows it.
+    /// The title of the task (or the name of the habit) a change is for, as this iPhone knows it.
     func title(for change: PendingChange) -> String? {
+        if let name = change.habitName { return name }
         if case .taskDeleted(let last?) = change.state { return last.title }
         if case .conflict(let theirs) = change.state { return theirs.title }
         return change.taskID.flatMap { id in list.tasks.first { $0.id == id }?.title }
@@ -369,11 +384,160 @@ final class AppModel {
     private func reload() async {
         guard let store else { return }
         list = await store.list
+        cachedHabits = await store.habits
         changes = await store.changes
         tasks = list.tasks.applying(changes).inListOrder()
+        habits = cachedHabits.habits.reckoned(with: changes)
+        habitsSupported = cachedHabits.supported
         lastSynced = list.syncedAt
         hasLoaded = list.syncedAt != nil
         await didReload?(tasks)
+    }
+
+    // MARK: Habits
+
+    /// Fetches the habits, and tells the Mac where this iPhone is if it has that wrong:
+    /// "today" is told by the time zone the user is in.
+    private func loadHabits(with engine: SyncEngine) async throws {
+        let fetched = try await engine.refreshHabits()
+        let here = TimeZone.current.identifier
+        guard fetched.supported == true, fetched.zone != here else { return }
+        try await engine.client.reportZone(here)
+        try await engine.refreshHabits()
+    }
+
+    /// Fetches just the habits: for when the Mac says they changed.
+    func refreshHabits() async {
+        guard let engine else { return }
+        do {
+            try await loadHabits(with: engine)
+        } catch {
+            report(error)
+        }
+        await reload()
+    }
+
+    /// Works the habits out again for the time it is now. A new day begins while the app
+    /// is open, and nothing else would notice.
+    func reckonHabits() {
+        let now = cachedHabits.habits.reckoned(with: changes)
+        if now != habits { habits = now }
+    }
+
+    func habit(_ id: Int) -> Habit? {
+        habits.first { $0.id == id }
+    }
+
+    /// The day of a habit a change is for: today, or yesterday while it can still be logged.
+    private func day(of habit: Habit, yesterday: Bool) -> Day {
+        yesterday ? habit.yesterday.day : habit.today.day
+    }
+
+    /// Checks in a habit, or one slot of it. With no slot named it is the one still to do.
+    /// It shows at once and is sent when the Mac can be reached.
+    func checkIn(_ habit: Habit, slot: String? = nil, yesterday: Bool = false, source: HabitSource = .manual) async {
+        let day = yesterday ? habit.yesterday : habit.today
+        let chosen = habit.isWeekly ? nil : (slot ?? (yesterday ? day.remaining.first?.id : habit.slotToCheckIn()))
+        guard habit.isWeekly ? day.state != .done : chosen != nil else { return } // nothing left to check in
+        await make(.checkIn(habit: habit.id, name: habit.name, slot: chosen, day: day.day, at: Date(), zone: TimeZone.current.identifier, source: source, backfilled: yesterday))
+    }
+
+    /// Takes a check-in back: the ones the Mac has for that slot, and any made here that
+    /// it may not have yet. Naming them means it can't remove one made somewhere else since.
+    func undoCheckIn(_ habit: Habit, slot: String? = nil, yesterday: Bool = false) async {
+        let day = day(of: habit, yesterday: yesterday)
+        let onMac = cachedHabits.habits.first { $0.id == habit.id }.flatMap { [$0.today, $0.yesterday].first { $0.day == day } }
+        let checkins = onMac.map { $0.isSession ? $0.checkins : $0.slots.filter { slot == nil || $0.id == slot }.flatMap(\.checkins) } ?? []
+        // Leaving out whatever an undo that is still waiting has already named.
+        var takenBack: Set<Int> = []
+        var takenBackHere: Set<UUID> = []
+        var keys: [UUID] = []
+        for change in changes where change.habitID == habit.id && change.isWaiting {
+            switch change.kind {
+            case .undoCheckIn(_, _, _, _, let ids, let named, _):
+                takenBack.formUnion(ids)
+                takenBackHere.formUnion(named)
+            case .checkIn(_, _, let itsSlot, day, _, _, _, _) where slot == nil || itsSlot == slot:
+                keys.append(change.id)
+            default:
+                break
+            }
+        }
+        let ids = checkins.filter { !takenBack.contains($0) }
+        keys.removeAll(where: takenBackHere.contains)
+        guard !ids.isEmpty || !keys.isEmpty else { return }
+        await make(.undoCheckIn(habit: habit.id, name: habit.name, slot: slot, day: day, checkins: ids, keys: keys, at: Date()))
+    }
+
+    /// Marks today (or yesterday) as a rest day: it neither breaks the streak nor adds to it.
+    func skip(_ habit: Habit, yesterday: Bool = false, reason: String? = nil) async {
+        await make(.skipHabit(habit: habit.id, name: habit.name, day: day(of: habit, yesterday: yesterday), at: Date(), zone: TimeZone.current.identifier, reason: reason))
+    }
+
+    func undoSkip(_ habit: Habit, yesterday: Bool = false) async {
+        await make(.undoSkip(habit: habit.id, name: habit.name, day: day(of: habit, yesterday: yesterday), at: Date(), zone: TimeZone.current.identifier))
+    }
+
+    /// True while a change to this habit is waiting to be sent.
+    func hasWaitingChanges(habit id: Int) -> Bool {
+        changes.contains { $0.habitID == id && $0.isWaiting }
+    }
+
+    // Making and changing habits themselves needs the Mac: unlike a check-in, there is
+    // nothing useful to show for a habit the Mac hasn't accepted. Each returns what
+    // went wrong, in words for the user, or nil.
+
+    /// Creates a habit, or saves an edit to one.
+    func saveHabit(_ draft: HabitDraft, editing habit: Habit? = nil) async -> String? {
+        await managing { client in
+            if let habit {
+                try await client.updateHabit(habit.id, rev: habit.rev, draft)
+            } else {
+                try await client.createHabit(draft, key: UUID())
+            }
+        }
+    }
+
+    func setHabit(_ habit: Habit, paused: Bool? = nil, archived: Bool? = nil) async -> String? {
+        await managing { try await $0.setHabit(habit.id, paused: paused, archived: archived) }
+    }
+
+    func deleteHabit(_ habit: Habit) async -> String? {
+        let failure = await managing { client in
+            try await client.deleteHabit(habit.id)
+            return nil
+        }
+        if failure == nil {
+            await store?.forget(habit: habit.id)
+            await reload()
+        }
+        return failure
+    }
+
+    private func managing(_ change: (HubClient) async throws -> Habit?) async -> String? {
+        guard let client, let store else { return "This iPhone isn’t connected to a Mac." }
+        do {
+            if let habit = try await change(client) { await store.keep(habit) }
+            await reload()
+            return nil
+        } catch HubError.habitConflict(let current) {
+            await store.keep(current)
+            await reload()
+            return "“\(current.name)” was changed on your Mac while you were editing. It is shown as it is now; make your change again."
+        } catch HubError.notFound {
+            return "That habit is no longer on your Mac."
+        } catch let error as HubError {
+            if case .invalid(_, let message) = error { return message }
+            report(error)
+            return "Your Mac can’t be reached right now. Habits can be changed when it can; check-ins don’t need it."
+        } catch {
+            return nil // cancelled
+        }
+    }
+
+    /// A habit's past for a calendar, if the Mac can be reached.
+    func history(of habit: Habit) async -> HabitHistory? {
+        try? await client?.habitHistory(habit.id)
     }
 
     // MARK: Changes

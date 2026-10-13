@@ -124,6 +124,8 @@ public enum ConnectionIssue: Sendable, Equatable {
             self = .other(message)
         case .conflict, .preconditionRequired:
             self = .other("The task changed on your Mac.")
+        case .habitConflict:
+            self = .other("The habit changed on your Mac.")
         }
     }
 

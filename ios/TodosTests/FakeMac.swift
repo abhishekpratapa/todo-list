@@ -14,7 +14,19 @@ final class FakeMac: @unchecked Sendable {
     private var sent: [URLRequest] = []
     private var unreachable = false
     private var revoked = false
-    private var revision = Compatibility.requiredRevision
+    private var revision = 5
+
+    // Habits, kept just well enough for the app's own behaviour: which slots are checked in,
+    // by which check-ins, and a streak that counts today once it is complete. The real
+    // rules are the Mac's, and are tested against the real server in TodosKit.
+    private var habits: [Habit] = []
+    private var streaksBefore: [Int: Int] = [:]
+    private var habitVersion = 1
+    private var zone = TimeZone.current.identifier
+    private var nextCheckin = 1
+    /// Check-ins the Mac has recorded: the key each was sent with, if any, and where it went.
+    private var checkins: [(id: Int, key: String?, habit: Int, slot: String?, day: Day)] = []
+    private var refusal: String?
 
     // MARK: What a test does to the Mac
 
@@ -45,6 +57,187 @@ final class FakeMac: @unchecked Sendable {
         lock.withLock {
             tasks.removeAll { $0.id == id }
             listVersion += 1
+        }
+    }
+
+    // MARK: Habits on the Mac
+
+    /// A habit with these slots (none, for one counted in weeks), on a streak of `streak` before today.
+    @discardableResult
+    func addHabit(_ name: String, slots: [String] = ["morning", "evening"], weekly target: Int? = nil, streak: Int = 0) -> Habit {
+        lock.withLock {
+            let today = HabitClock.day(of: Date(), zone: .current, dayStart: .defaultDayStart)
+            let schedule: HabitSchedule = target.map { .weekly(target: $0, remind: nil) } ?? .daily(slots: slots.map { HabitSlot(id: $0, name: $0.capitalized, remind: ClockTime("09:00")) })
+            let day = { (day: Day) in target == nil ? HabitDay(day: day, state: .open, slots: slots.map { HabitDay.Slot(id: $0) }) : HabitDay(day: day, state: .open, isSession: true) }
+            var yesterday = day(today.adding(days: -1))
+            yesterday.state = streak > 0 ? .done : .open
+            for index in yesterday.slots.indices where streak > 0 { yesterday.slots[index].done = true }
+            let habit = Habit(id: nextID, name: name, schedule: schedule, today: day(today), yesterday: yesterday,
+                              week: target.map { HabitWeek(start: today.weekStart, state: .open, count: 0, target: $0, days: []) },
+                              streak: HabitStreak(current: streak, best: streak, unit: target == nil ? .days : .weeks), skipsLeft: 2)
+            nextID += 1
+            habits.append(habit)
+            streaksBefore[habit.id] = streak
+            // A streak means yesterday was done: by check-ins like any other day's.
+            if streak > 0 {
+                for slot in yesterday.slots {
+                    checkins.append((nextCheckin, nil, habit.id, slot.id, yesterday.day))
+                    nextCheckin += 1
+                }
+                settle(habits.count - 1)
+            }
+            habitVersion += 1
+            return habits[habits.count - 1]
+        }
+    }
+
+    /// A check-in made on the Mac itself, or by another device.
+    func checkIn(_ id: Int, slot: String?) {
+        lock.withLock {
+            guard let index = habits.firstIndex(where: { $0.id == id }) else { return }
+            record(nil, habit: index, slot: slot, day: habits[index].today.day)
+        }
+    }
+
+    func habit(_ id: Int) -> Habit? { lock.withLock { habits.first { $0.id == id } } }
+    var allHabits: [Habit] { lock.withLock { habits } }
+    var habitsVersion: Int { lock.withLock { habitVersion } }
+    /// How many check-ins the Mac has for today, across every habit.
+    var recordedCheckins: Int { lock.withLock { checkins.filter { entry in habits.contains { $0.id == entry.habit && $0.today.day == entry.day } }.count } }
+
+    /// The time zone the Mac is telling "today" by.
+    var habitZone: String {
+        get { lock.withLock { zone } }
+        set { lock.withLock { zone = newValue } }
+    }
+
+    /// When set, check-ins are refused with this message, as the Mac refuses one that is too late.
+    var refusesCheckIns: String? {
+        get { lock.withLock { refusal } }
+        set { lock.withLock { refusal = newValue } }
+    }
+
+    private func record(_ key: String?, habit index: Int, slot: String?, day: Day) {
+        checkins.append((nextCheckin, key, habits[index].id, slot, day))
+        nextCheckin += 1
+        settle(index)
+    }
+
+    /// Works out again how a habit's two days stand from the check-ins recorded.
+    private func settle(_ index: Int) {
+        let id = habits[index].id
+        func settled(_ day: HabitDay) -> HabitDay {
+            var day = day
+            let its = checkins.filter { $0.habit == id && $0.day == day.day }
+            if day.isSession {
+                day.checkins = its.map(\.id)
+                day.state = its.isEmpty ? .open : .done
+            } else {
+                for slot in day.slots.indices {
+                    let ids = its.filter { $0.slot == day.slots[slot].id }.map(\.id)
+                    day.slots[slot] = HabitDay.Slot(id: day.slots[slot].id, done: !ids.isEmpty, at: ids.isEmpty ? nil : Date(timeIntervalSince1970: 1_800_000_000), by: ids.isEmpty ? nil : "me", checkins: ids)
+                }
+                if day.state != .skipped || day.slots.allSatisfy(\.done) { day.state = day.slots.allSatisfy(\.done) ? .done : .open }
+            }
+            return day
+        }
+        let wasDoneYesterday = habits[index].yesterday.state == .done
+        habits[index].today = settled(habits[index].today)
+        habits[index].yesterday = settled(habits[index].yesterday)
+        if var week = habits[index].week {
+            week.days = Set(checkins.filter { $0.habit == id }.map(\.day)).sorted()
+            week.count = week.days.count
+            week.state = week.count >= week.target ? .met : .open
+            habits[index].week = week
+            habits[index].streak.current = (streaksBefore[id] ?? 0) + (week.state == .met ? 1 : 0)
+        } else {
+            let yesterday = habits[index].yesterday.state == .done
+            // The streak before today counted yesterday if it was done when the habit was made.
+            let base = (streaksBefore[id] ?? 0) + (yesterday && !wasDoneYesterday ? 1 : 0) - (!yesterday && wasDoneYesterday ? 1 : 0)
+            streaksBefore[id] = base
+            habits[index].streak.current = base + (habits[index].today.state == .done ? 1 : 0)
+        }
+        habits[index].streak.best = max(habits[index].streak.best, habits[index].streak.current)
+        habitVersion += 1
+    }
+
+    private struct HabitAnswer: Encodable {
+        var habit: Habit
+    }
+
+    /// The habit routes. Nil when the request is not for a habit.
+    private func respondAboutHabits(_ request: URLRequest, _ method: String, _ parts: [String], _ body: [String: Any]) -> (Int, Data)? {
+        guard parts.first == "habits" else { return nil }
+        guard revision >= 5 else { return error(404, "not_found", "No such endpoint.") } // a Todos from before habits
+        if parts.count == 1, method == "GET" {
+            struct List: Encodable {
+                var habits: [Habit]
+                var zone: String
+                var version: Int
+            }
+            return answer(200, List(habits: habits.filter { !$0.archived }, zone: zone, version: habitVersion))
+        }
+        if parts.count == 1, method == "POST" {
+            guard let draft = try? HubJSON.decoder().decode(HabitDraft.self, from: request.httpBody ?? Data()) else { return error(400, "invalid", "A habit needs a name") }
+            let today = HabitClock.day(of: Date(), zone: .current, dayStart: draft.dayStart)
+            var schedule = draft.schedule
+            if case .daily(let slots) = schedule { schedule = .daily(slots: slots.map { var slot = $0; slot.id = slot.name.lowercased(); return slot }) }
+            let day = { (day: Day) in schedule.isWeekly ? HabitDay(day: day, state: .open, isSession: true) : HabitDay(day: day, state: .open, slots: schedule.slots.map { HabitDay.Slot(id: $0.id) }) }
+            let habit = Habit(id: nextID, name: draft.name, icon: draft.icon.isEmpty ? nil : draft.icon, color: draft.color, dayStart: draft.dayStart, schedule: schedule,
+                              today: day(today), yesterday: HabitDay(day: today.adding(days: -1), state: .off), skipsLeft: 2)
+            nextID += 1
+            habits.append(habit)
+            habitVersion += 1
+            return answer(201, HabitAnswer(habit: habit))
+        }
+        if parts == ["habits", "zone"], method == "POST" {
+            zone = body["zone"] as? String ?? zone
+            habitVersion += 1
+            return (200, Data(#"{"zone":"\#(zone)"}"#.utf8))
+        }
+        guard parts.count >= 2, let id = Int(parts[1]), let index = habits.firstIndex(where: { $0.id == id }) else { return error(404, "not_found", "No habit with id #\(parts.count > 1 ? parts[1] : "")") }
+        let key = request.value(forHTTPHeaderField: "Idempotency-Key")
+        let day = (body["day"] as? String).flatMap(Day.init) ?? habits[index].today.day
+
+        switch (method, parts.count > 2 ? parts[2] : "") {
+        case ("GET", ""):
+            return answer(200, HabitAnswer(habit: habits[index]))
+        case ("PATCH", ""):
+            let basedOn = request.value(forHTTPHeaderField: "If-Match") ?? ""
+            if basedOn != "*", basedOn != "\"\(habits[index].rev)\"" {
+                return (409, Data(#"{"error":{"code":"conflict","message":"changed","current":\#(String(decoding: try! HubJSON.encoder().encode(habits[index]), as: UTF8.self))}}"#.utf8))
+            }
+            if let name = body["name"] as? String { habits[index].name = name }
+            if let paused = body["paused"] as? Bool { habits[index].paused = paused }
+            if let archived = body["archived"] as? Bool { habits[index].archived = archived }
+            habits[index].rev += 1
+            habitVersion += 1
+            return answer(200, HabitAnswer(habit: habits[index]))
+        case ("DELETE", ""):
+            habits.remove(at: index)
+            habitVersion += 1
+            return (204, Data())
+        case ("POST", "checkins"):
+            if let refusal { return error(400, "too_late", refusal) }
+            if let key, checkins.contains(where: { $0.key == key }) { return answer(200, HabitAnswer(habit: habits[index])) } // sent twice: recorded once
+            record(key, habit: index, slot: body["slot"] as? String, day: day)
+            return answer(201, HabitAnswer(habit: habits[index]))
+        case ("POST", "undo"):
+            if body["skip"] as? Bool == true {
+                if habits[index].today.day == day { habits[index].today.state = .open }
+            } else {
+                let ids = body["checkins"] as? [Int] ?? []
+                let keys = body["keys"] as? [String] ?? []
+                checkins.removeAll { $0.habit == id && (ids.contains($0.id) || ($0.key.map(keys.contains) ?? false)) }
+            }
+            settle(index)
+            return answer(200, HabitAnswer(habit: habits[index]))
+        case ("POST", "skips"):
+            if habits[index].today.day == day, habits[index].today.state == .open { habits[index].today.state = .skipped }
+            habitVersion += 1
+            return answer(201, HabitAnswer(habit: habits[index]))
+        default:
+            return error(404, "not_found", "No such endpoint.")
         }
     }
 
@@ -148,6 +341,7 @@ final class FakeMac: @unchecked Sendable {
             break
         }
 
+        if let aboutHabits = respondAboutHabits(request, method, parts, body) { return aboutHabits }
         guard parts.first == "tasks", parts.count >= 2, let id = Int(parts[1]) else { return error(404, "not_found", "No such endpoint.") }
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return error(404, "not_found", "No todo with id #\(id)") }
         let basedOn = request.value(forHTTPHeaderField: "If-Match").flatMap { Int($0.trimmingCharacters(in: CharacterSet(charactersIn: "\""))) }

@@ -1,5 +1,5 @@
-// The top of the app: pairing until this iPhone knows a Mac, then the list.
-// Quick capture floats over every screen, so it is always one tap away.
+// The top of the app: pairing until this iPhone knows a Mac, then two tabs, the
+// task list and the habits. Quick capture floats over the list, one tap away.
 
 import SwiftUI
 import TodosKit
@@ -36,47 +36,79 @@ struct RootView: View {
 }
 
 struct MainView: View {
+    enum Tab: Hashable {
+        case tasks, habits
+    }
+
     @Environment(AppModel.self) private var model
+    @State private var tab = Tab.tasks
     @State private var capturing = false
     @State private var showingSettings = false
     @State private var path: [Int] = []
 
     var body: some View {
         @Bindable var model = model
+        TabView(selection: $tab) {
+            tasks
+                .tabItem { Label("Tasks", systemImage: "checklist") }
+                .tag(Tab.tasks)
+            HabitsView(showingSettings: $showingSettings)
+                .overlay(alignment: .bottom) { notice(bottom: 16) }
+                .tabItem { Label("Habits", systemImage: "flame") }
+                .badge(model.habits.leftToday)
+                .tag(Tab.habits)
+        }
+        // A reminder or the widget was tapped: go to that task, or that habit.
+        .onChange(of: model.requestedTask, initial: true) { _, task in
+            guard let task else { return }
+            model.requestedTask = nil
+            dismissSheets()
+            tab = .tasks
+            path = [task]
+        }
+        .onChange(of: model.requestedHabit, initial: true) { _, habit in
+            guard habit != nil else { return } // HabitsView opens it; this only brings its tab forward
+            dismissSheets()
+            tab = .habits
+        }
+        .animation(.snappy, value: model.notice)
+        .sheet(isPresented: $capturing) { QuickCaptureView() }
+        .sheet(isPresented: $showingSettings) { SettingsView() }
+        .sheet(isPresented: $model.isShowingSync) { SyncView() }
+    }
+
+    private var tasks: some View {
         NavigationStack(path: $path) {
             TaskListView(showingSettings: $showingSettings)
                 .navigationDestination(for: Int.self) { TaskDetailView(taskID: $0) }
         }
-        // A reminder or the widget was tapped: go to that task.
-        .onChange(of: model.requestedTask, initial: true) { _, task in
-            guard let task else { return }
-            model.requestedTask = nil
-            capturing = false
-            showingSettings = false
-            model.isShowingSync = false
-            path = [task]
-        }
-        .overlay(alignment: .bottom) {
-            if let notice = model.notice {
-                NoticeView(notice: notice)
-                    .padding(.bottom, 92)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .task(id: notice.id) {
-                        try? await Task.sleep(for: .seconds(notice.isError ? 5 : 3))
-                        if model.notice?.id == notice.id { model.notice = nil }
-                    }
-            }
-        }
+        .overlay(alignment: .bottom) { notice(bottom: 92) }
         .overlay(alignment: .bottomTrailing) {
             CaptureButton { capturing = true }
                 .padding(.trailing, 20)
                 .padding(.bottom, 16)
                 .ignoresSafeArea(.keyboard, edges: .bottom) // stays put, under the keyboard, instead of covering a text field
         }
-        .animation(.snappy, value: model.notice)
-        .sheet(isPresented: $capturing) { QuickCaptureView() }
-        .sheet(isPresented: $showingSettings) { SettingsView() }
-        .sheet(isPresented: $model.isShowingSync) { SyncView() }
+    }
+
+    private func dismissSheets() {
+        capturing = false
+        showingSettings = false
+        model.isShowingSync = false
+    }
+
+    /// A short message over the bottom of a tab, gone by itself after a few seconds.
+    @ViewBuilder
+    private func notice(bottom: CGFloat) -> some View {
+        if let notice = model.notice {
+            NoticeView(notice: notice)
+                .padding(.bottom, bottom)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .task(id: notice.id) {
+                    try? await Task.sleep(for: .seconds(notice.isError ? 5 : 3))
+                    if model.notice?.id == notice.id { model.notice = nil }
+                }
+        }
     }
 }
 

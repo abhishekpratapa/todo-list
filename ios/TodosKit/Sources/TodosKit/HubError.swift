@@ -13,6 +13,8 @@ public enum HubError: Error, Sendable, Equatable {
     case notFound(message: String)
     /// 409. The task changed since the revision the edit was based on. Nothing was changed.
     case conflict(current: TodoTask)
+    /// 409, for a habit: it changed since the revision the edit was based on.
+    case habitConflict(current: Habit)
     /// 428. An edit or delete did not say which revision it was based on.
     case preconditionRequired
     /// 400, 413, 415. The Mac refused the input; `message` says why.
@@ -38,7 +40,7 @@ public enum HubError: Error, Sendable, Equatable {
         case .forbidden(let code, _): "forbidden(\(code))"
         case .remoteAccessOff: "remoteAccessOff"
         case .notFound: "notFound"
-        case .conflict: "conflict"
+        case .conflict, .habitConflict: "conflict"
         case .preconditionRequired: "preconditionRequired"
         case .invalid(let code, _): "invalid(\(code))"
         case .rateLimited: "rateLimited"
@@ -65,7 +67,19 @@ extension HubError {
         struct Detail: Decodable {
             var code: String?
             var message: String?
+            /// What a conflict was with: a task, or a habit.
             var current: TodoTask?
+            var currentHabit: Habit?
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                code = try? c.decode(String.self, forKey: .code)
+                message = try? c.decode(String.self, forKey: .message)
+                current = try? c.decode(TodoTask.self, forKey: .current)
+                currentHabit = current == nil ? try? c.decode(Habit.self, forKey: .current) : nil
+            }
+
+            enum CodingKeys: String, CodingKey { case code, message, current }
         }
 
         var error: Detail?
@@ -99,6 +113,7 @@ extension HubError {
             return .notFound(message: message ?? "Not found")
         case 409:
             if let current = envelope?.error?.current { return .conflict(current: current) }
+            if let current = envelope?.error?.currentHabit { return .habitConflict(current: current) }
             return .server(status: status, code: code, message: message)
         case 428:
             return .preconditionRequired
