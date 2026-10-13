@@ -120,6 +120,8 @@ Touch and hold the home screen, tap **Edit → Add Widget**, choose **Todos**, s
 
 Large is the biggest size iOS offers on an iPhone: it takes four of a page's six rows of icons. iOS gives neither an app nor a Mac a way to put a widget on the home screen for you.
 
+If an update adds a size and a widget that was already on the home screen won't take it (it flashes and goes back to the size it had), remove that widget and add it again, or restart the iPhone. iOS keeps the old list of sizes for a widget that is already placed until the home screen restarts. Seen on iOS 26 when the large size was added.
+
 The widget reads the list kept on the iPhone, with your waiting changes applied, so it shows what the app shows. It does not contact the Mac itself: it updates when the app does, and at midnight.
 
 ### Shortcuts, Siri and the Action button
