@@ -13,10 +13,12 @@ import (
 
 // Event is one live update. "hello" arrives on connecting and "change" whenever
 // anything in the list changes; both carry the list's version and nothing else,
-// so what changed is found by fetching again.
+// so what changed is found by fetching again. "habits" says the habits changed:
+// Version is still the task list's, unchanged, and Habits is the habits' own.
 type Event struct {
 	Type    string
 	Version int
+	Habits  int
 }
 
 // How long the stream may be silent before it is taken for dead. The server
@@ -63,9 +65,10 @@ func (c *Client) Events(ctx context.Context, fn func(Event) error) error {
 			if name != "" {
 				var payload struct {
 					Version int `json:"version"`
+					Habits  int `json:"habits"`
 				}
 				_ = json.Unmarshal([]byte(data), &payload)
-				if err := fn(Event{Type: name, Version: payload.Version}); err != nil {
+				if err := fn(Event{Type: name, Version: payload.Version, Habits: payload.Habits}); err != nil {
 					return err
 				}
 			}

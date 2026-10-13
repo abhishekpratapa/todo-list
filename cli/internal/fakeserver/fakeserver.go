@@ -94,6 +94,13 @@ type Server struct {
 	folders  map[string]string // project -> folder remembered for Start with Claude
 	closers  []func()
 
+	// Habits (see habits.go). Served from Revision 5 on.
+	habits        []*Habit
+	checkins      []*Checkin
+	nextHabit     int
+	nextCheckin   int
+	habitsVersion int
+
 	AppVersion string
 	Revision   int
 	MinCLI     string
@@ -990,6 +997,11 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request, local bool, path 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if strings.HasPrefix(path, "/habits") {
+		s.routeHabits(w, r, path, via, key, body, fail)
+		return
+	}
 
 	// already says whether this change was made before, under the same key.
 	already := func(t *Task) bool {

@@ -459,7 +459,8 @@ func (a *App) Root() *cobra.Command {
 			theme := strings.ToLower(a.Getenv("TODOS_THEME"))
 			return tui.Run(cmd.Context(), tui.Options{
 				Client: s.Client, Profile: s.Profile.Name, Local: s.Profile.Local, Mouse: mouse, Getenv: a.Getenv,
-				Dark: theme != "light", FixedTheme: theme == "light" || theme == "dark",
+				Habits: s.Info.APIVersion.Revision >= api.HabitsRevision,
+				Dark:   theme != "light", FixedTheme: theme == "light" || theme == "dark",
 			}, a.In, a.Out)
 		},
 	}
@@ -480,12 +481,16 @@ func (a *App) Root() *cobra.Command {
 
 	root.AddGroup(
 		&cobra.Group{ID: "tasks", Title: "Tasks"},
+		&cobra.Group{ID: "habits", Title: "Habits"},
 		&cobra.Group{ID: "connection", Title: "Connection"},
 	)
 	for _, c := range a.taskCommands() {
 		c.GroupID = "tasks"
 		root.AddCommand(c)
 	}
+	habits := a.habitCommand()
+	habits.GroupID = "habits"
+	root.AddCommand(habits)
 	for _, c := range a.connectionCommands() {
 		c.GroupID = "connection"
 		root.AddCommand(c)

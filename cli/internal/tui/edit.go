@@ -133,7 +133,11 @@ func (e editState) hint() string {
 
 func (m Model) boardKeys() []key.Binding {
 	k := m.keys
-	return []key.Binding{k.Help, k.Add, k.Open, k.Edit, k.Done, k.Search, k.NextTile, k.Quit}
+	keys := []key.Binding{k.Help, k.Add, k.Open, k.Edit, k.Done, k.Search, k.NextTile, k.Quit}
+	if len(m.habits) > 0 {
+		keys = append(keys[:len(keys)-1], k.Habits, k.Quit)
+	}
+	return keys
 }
 
 func (m Model) detailKeys() []key.Binding {
@@ -143,12 +147,16 @@ func (m Model) detailKeys() []key.Binding {
 
 func (m Model) fullHelp() [][]key.Binding {
 	k := m.keys
-	return [][]key.Binding{
+	groups := [][]key.Binding{
 		{k.Up, k.Down, k.Left, k.Right, k.Top, k.Bottom},
 		{k.NextTile, k.PrevTile, k.Search, k.Open, k.Back, k.Refresh, k.Help, k.Quit},
 		{k.Add, k.Edit, k.Notes, k.Comment, k.Delete, k.Claude},
 		{k.Done, k.Start, k.Block, k.MoveLeft, k.MoveRight, k.Toggle, k.AddSubtask},
 	}
+	if m.opts.Habits {
+		groups[1] = append(groups[1][:len(groups[1])-2], k.Habits, k.Help, k.Quit)
+	}
+	return groups
 }
 
 // ---------- sending changes ----------

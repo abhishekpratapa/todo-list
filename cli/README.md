@@ -160,6 +160,22 @@ Changing things, on the selected card or in an open task:
 
 The line at the bottom says how things stand: `● live` while changes are arriving as they happen (`○ reconnecting` when the connection has dropped and is being reopened), the profile, how long ago the list was read, and anything that went wrong.
 
+### Habits on the board
+
+If you have [habits](../README.md#habits), the bottom line also says how many check-ins are left today, and `t` opens the habits panel: what is still to do (soonest first), what is done, and what asks nothing today, each with how today stands, its streak, and its times of day. It follows check-ins made anywhere else as they happen.
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` or `k` `j`, `g` `G` | Move between habits |
+| `x` (or `enter`, `space`) | Check in whichever time of day is still to do. The app picks, by the hour, and the bottom line says which it took |
+| `1`–`9` | That time of day: checks it in, or takes it back if it is done |
+| `u` | Take back all of today's check-ins for the habit |
+| `y` | Log yesterday's next missing time of day, which is possible until today ends. When a streak hangs on it, the panel says so under the habit |
+| `s` | A rest day (a rest week, for a habit counted in weeks); `s` again takes it back |
+| `esc`, `t` or `q` | Back to the board |
+
+With a Todos app from before habits, none of this shows and the board is as it was.
+
 Colors follow the app's, in a light and a dark form chosen by asking the terminal for its background. `TODOS_THEME=light` or `dark` decides instead. The selected card is marked with a bar as well as by color, so it shows in any terminal. The mouse is left alone so the terminal's own text selection keeps working; `todos --mouse` lets the board take clicks and the wheel.
 
 It works the same over SSH: it only needs a terminal.
@@ -183,12 +199,34 @@ A task is named by its number (`12` or `#12`) or by words from its title (`todos
 | `todos rm <task>` | Delete, after asking. `--yes` doesn't ask. |
 | `todos sub add <task> <title>…` | Add subtasks. Also `sub done`, `sub undo`, `sub rm <task> <subtask>…`, where a subtask is its number or words from its title. |
 | `todos comment <task> <text>` | Add a comment. `-` reads standard input. |
-| `todos watch` | Print changes as they happen, whoever makes them. Ctrl-C stops it. |
+| `todos watch` | Print changes to tasks as they happen, whoever makes them. Ctrl-C stops it. |
+| `todos habit` | List habits in the order of the day, with how today stands and each streak. The same as `todos habit ls`; `--all` includes archived ones. |
+| `todos habit done <habit>…` | Check in. `--slot morning` says which time of day; without it the app takes whichever is still to do. `--yesterday` logs yesterday, which is possible until today ends. |
+| `todos habit undo <habit>…` | Take back today's check-ins (`--slot` for one time of day, `--yesterday` for yesterday's). |
+| `todos habit skip <habit>…` | A rest day: it neither breaks the streak nor adds to it. `-m "why"`, `--yesterday`, and `--undo` to take it back. |
 | `todos claude <task>` | Start a Claude session on the task in this terminal. On the Mac only; see below. |
 | `todos pair`, `todos profiles`, `todos status` | Connecting; see above. |
 | `todos version`, `todos completion <shell>` | |
 
 Every command takes `--profile NAME`, `--json`, `--no-color` and `--no-input`. `todos <command> --help` has the details and examples.
+
+### Habits
+
+A habit is named like a task: by its number, or by words from its name (`todos habit done floss`). An exact name wins over longer names that contain it, and if the words match several habits you are asked which on a terminal; in a script the command fails and lists them.
+
+```bash
+todos habit
+```
+
+```bash
+todos habit done brush --slot evening
+```
+
+Checking in something that is already done changes nothing and is not an error, so a script can run `todos habit done` without looking first. The app's own limits come back as it words them, with exit code 2: a time of day the habit doesn't have, a day further back than yesterday, more rest days than it allows (2 in any 7 and 6 in any 30).
+
+Streaks are worked out by the app and printed as they are: the numbers here are the ones the Mac window and the iPhone show. Habits are made and edited in the iPhone app; the command lists them, checks them in and rests them.
+
+Habits need a Todos app that speaks API revision 5. With an older one the habit commands say so (exit code 8) and everything else works as before.
 
 ### One-line entry
 
@@ -274,6 +312,12 @@ todos sub add "$id" "Find the account number"
 
 `todos rm` prints the id it deleted. `todos watch` puts `created`, `updated` or `deleted` in front of the line.
 
+**A habit** is one line too: id, where it stands today (`due`, `done`, `off`, `paused` or `archived`), today's count (`1/2`: times of day done out of those it has; for a habit counted in weeks, days this week out of its target), its streak (`12d`, or `3w` in weeks) and its name. `todos habit` prints them in the order of the day, and the commands that change a habit print that habit's line.
+
+```bash
+todos habit | awk -F'\t' '$2 == "due" { print $5 }'
+```
+
 ### JSON
 
 `--json` works on every command. Tasks are passed through exactly as the app's API sends them, so the schema is the API's: `Task`, `TaskSummary` and `Counts` in [`docs/openapi.json`](../docs/openapi.json). Within API version 1 fields are only ever added.
@@ -287,10 +331,16 @@ todos sub add "$id" "Find the account number"
 | `done` `start` `block` `reopen` `edit` `sub` `comment` | `{"task": Task, "next": Task or null}` (`next` is the new occurrence of a repeating task) |
 | `rm` | `{"deleted": {"id": n, "title": ""}}` |
 | `watch` | One object per line: `{"event": "created\|updated\|deleted", "version": n, "task": TaskSummary, "changed": ["status"]}` |
+| `habit`, `habit ls` | `{"habits": [Habit], "zone": "America/Chicago", "version": n}` |
+| `habit done` | `{"habit": Habit, "checkin": HabitCheckin or null}` (`null` when there was nothing left to check in) |
+| `habit undo`, `habit skip --undo` | `{"habit": Habit}` |
+| `habit skip` | `{"habit": Habit, "skip": HabitCheckin or null}` (`null` when there was nothing to rest) |
 | `status` | `{"profile": "", "transport": "socket\|https", "address": "", "appVersion": "", "apiVersion": {"version": 1, "revision": 4}, "cliVersion": "", "minClientVersions": {}}` |
 | `profiles` | `{"profiles": [{"name": "", "url": "", "ssh": "", "tokenStore": "", "default": false, "current": false}], "default": ""}` |
 
 A `Task` has `id`, `title`, `notes`, `status` (`todo`, `in_progress`, `blocked`, `done`), `priority` (`high`, `medium`, `low`), `due` (`YYYY-MM-DD` or null), `project`, `tags`, `assignee` (`me`, `claude`), `subtasks` (`[{id, title, done}]`), `repeat`, `remindAt`, `remindedAt`, `rev`, `createdBy`, `createdAt`, `updatedAt`, `completedAt` and `activity` (`[{at, by, kind, text, via}]`). A `TaskSummary` is the same without `activity`, plus `comments` (a count).
+
+A `Habit` (also in `docs/openapi.json`) has `id`, `name`, `icon`, `color`, `dayStart`, `schedule`, `paused`, `archived`, `rev`, `today` and `yesterday` (for a habit with times of day: `{day, state, done, total, slots: [{id, done, at, by, via, source}]}`; for one counted in weeks: `{day, done}` plus `week: {start, state, count, target, days}`), `streak` (`{current, best, unit, atRisk, previous}`), `rates` and `skipsLeft`.
 
 On a terminal the JSON is indented; in a pipe each value is one line. A command given several tasks (`todos done 3 4 --json`) prints one object per line.
 
@@ -311,12 +361,12 @@ todos watch --json | jq -r 'select(.event == "created") | .task.title'
 | 0 | Done. |
 | 1 | Something else went wrong. |
 | 2 | Wrong usage: a bad flag or value, a name that matches several tasks, or a question with no terminal to ask it on. |
-| 3 | No such task or subtask. |
+| 3 | No such task, subtask or habit. |
 | 4 | Conflict: the task changed, and nothing was overwritten. |
 | 5 | Can't reach Todos: the Mac is asleep or offline, Tailscale is down, Remote Access is off, or the app isn't running on the other Mac. |
 | 6 | The access token was rejected (or there is none). |
 | 7 | Todos is not running and could not be started. |
-| 8 | Version mismatch: the command or the app is too old for the other. |
+| 8 | Version mismatch: the command or the app is too old for the other, or the app is too old for habits (everything else then still works). |
 | 9 | Not possible with this profile: a Mac-only command on a remote profile, or no profile yet. |
 | 10 | Rate limited or too many connections. Try again shortly. |
 | 130 | Interrupted, or a question answered with no. |
@@ -353,8 +403,8 @@ cd cli && go test ./...
 
 The tests never touch the installed app, its port (7420), its socket or its data.
 
-- **Unit tests** cover the connection layer over a socket and over HTTPS, profiles, token storage, starting the app and waiting for it, building the SSH command, output formats, exit codes, and the board (golden files of what it draws at several sizes, and each change and conflict).
-- **Integration tests** (`internal/integration`) run the built binary, directly and inside a pseudo-terminal, against two servers, each reached through a Unix socket and over HTTPS: a fake one (`internal/fakeserver`), which can also misbehave on request, and the **real Todos server** from this repository (`src/server.js`), started on port 7442 with its own data file, token and socket in a temporary folder. A small relay stands in for `tailscale serve`. The real-server tests are skipped where Node or the app's sources aren't available.
+- **Unit tests** cover the connection layer over a socket and over HTTPS, profiles, token storage, starting the app and waiting for it, building the SSH command, output formats, exit codes, the board (golden files of what it draws at several sizes, and each change and conflict), and habits: the commands, their output for a terminal, a pipe and `--json`, the order and wording of the day, and the board's panel.
+- **Integration tests** (`internal/integration`) run the built binary, directly and inside a pseudo-terminal, against two servers, each reached through a Unix socket and over HTTPS: a fake one (`internal/fakeserver`), which can also misbehave on request, and the **real Todos server** from this repository (`src/server.js`), started on port 7442 with its own data file, token and socket in a temporary folder. A small relay stands in for `tailscale serve`. The real-server tests are skipped where Node or the app's sources aren't available. The habit commands and the board's habits panel run against both as well; the fake keeps no history and works no streaks out, so it is the real server that shows a check-in giving the streak it should.
 - **The real app.** One test starts Todos itself (Electron), in the background, through the command, with its own settings, data, socket and port. It is off unless asked for, because it puts an icon in the Dock for a few seconds:
 
 ```bash

@@ -581,9 +581,13 @@ type VersionError struct {
 	AppTooOld bool   // otherwise this client is
 	Have      string // what the old side is
 	Need      string // what the other side needs
+	Feature   string // the one thing the app is too old for ("habits"), when everything else works
 }
 
 func (e *VersionError) Error() string {
+	if e.AppTooOld && e.Feature != "" {
+		return fmt.Sprintf("%s need a newer Todos app: this one speaks API revision %s, and %s came with revision %s. Update Todos on the Mac; the rest of the todos command works with it as it is", e.Feature, e.Have, e.Feature, e.Need)
+	}
 	if e.AppTooOld {
 		return fmt.Sprintf("the Todos app is too old for this todos command (it speaks API revision %s; %s or later is needed): update Todos on the Mac", e.Have, e.Need)
 	}

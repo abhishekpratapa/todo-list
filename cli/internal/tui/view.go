@@ -89,6 +89,8 @@ func (m Model) render() string {
 		body = m.styles.Muted.Render("\n  Reading the list…")
 	case m.edit.active() && m.edit.fullScreen():
 		body = m.editView(h)
+	case m.showHabits:
+		body = m.habitsView(h)
 	case m.detail != nil && m.width < paneFrom:
 		body = m.detailView(h)
 	case m.detail != nil:
@@ -390,6 +392,9 @@ func (m Model) statusView() string {
 	if ago := m.ago(m.updated); ago != "" {
 		parts = append(parts, s.StatusBar.Render(ago))
 	}
+	if habits := m.habitsStatus(); habits != "" {
+		parts = append(parts, s.StatusBar.Render(habits))
+	}
 	left := " " + strings.Join(parts, s.Faint.Render(" · "))
 	right := ""
 	room := max(10, m.width-lipgloss.Width(left)-3)
@@ -408,6 +413,9 @@ func (m Model) helpLine() string {
 	}
 	if hint := m.edit.hint(); hint != "" {
 		return ansi.Truncate(" "+m.styles.Faint.Render(hint), m.width, "…")
+	}
+	if m.showHabits {
+		return ansi.Truncate(" "+m.styles.Faint.Render(m.habitsHint()), m.width, "…")
 	}
 	keys := m.boardKeys()
 	if m.detail != nil {

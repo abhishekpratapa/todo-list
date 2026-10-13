@@ -14,6 +14,9 @@ type KeyMap struct {
 	Add, Edit, Notes, Comment, Delete       key.Binding
 	Toggle, AddSubtask                      key.Binding
 	Claude                                  key.Binding
+
+	// Habits (see habits.go).
+	Habits, HabitUndo, HabitYesterday, HabitRest key.Binding
 }
 
 func newKeys() KeyMap {
@@ -49,5 +52,10 @@ func newKeys() KeyMap {
 		Toggle:     b("space", "check subtask", "space"),
 		AddSubtask: b("+", "add subtask", "+"),
 		Claude:     b("C", "start with Claude", "C"),
+
+		Habits:         b("t", "habits", "t"),
+		HabitUndo:      b("u", "take back", "u"),
+		HabitYesterday: b("y", "log yesterday", "y"),
+		HabitRest:      b("s", "rest day", "s"),
 	}
 }

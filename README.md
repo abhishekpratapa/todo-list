@@ -209,6 +209,7 @@ Habits are in the API from revision 5 (`/api/v1/habits`, in [`docs/openapi.json`
 - **The menu bar** lists what is left today and checks a habit in with a click (see [Menu bar](#menu-bar)).
 - **The 9 AM summary** says which habits today asks for, and names any streak that can still be saved by logging yesterday.
 - **Claude** can list your habits and log a check-in when you say you did one (see [MCP tools](#mcp-tools)). It creates or deletes a habit only when you ask it to.
+- **In a terminal**, `todos habit` lists them, `todos habit done floss` checks one in (`--slot evening` for a time of day), `todos habit skip floss` is a rest day, and the board (`todos`) has a habits panel on `t`. See the [command's README](cli/README.md#habits).
 - Habits are made and edited in the [iPhone app](ios/README.md#habits), or through the API. The Mac window shows them, checks them in, rests and pauses them.
 
 ### What a habit is

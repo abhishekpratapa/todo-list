@@ -63,6 +63,7 @@ func start(t *testing.T, width, height int, seed func(*fakeserver.Server)) *runn
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	opts := Options{Client: api.NewSocket(socket), Profile: "local", Dark: true, FixedTheme: true, Loc: time.UTC}
+	f.Configure(func(s *fakeserver.Server) { opts.Habits = s.Revision >= api.HabitsRevision }) // as the command works it out from the app's answer
 	r := &running{fake: f, latest: &atomic.Pointer[frame]{}}
 	r.latest.Store(&frame{})
 	r.TestModel = teatest.NewTestModel(t, watched{New(ctx, opts), r.latest}, teatest.WithInitialTermSize(width, height))

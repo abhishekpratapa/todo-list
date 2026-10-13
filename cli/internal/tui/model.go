@@ -57,6 +57,7 @@ type Options struct {
 	// FixedTheme keeps Dark as given, whatever the terminal says (TODOS_THEME).
 	FixedTheme bool
 	Mouse      bool // take mouse clicks and the wheel
+	Habits     bool // the app has habits (API revision 5)
 	Now        func() time.Time
 	Loc        *time.Location
 }
@@ -112,6 +113,11 @@ type Model struct {
 	flash   string // what the last change did, shown until the next key
 
 	edit editState // see edit.go
+
+	// Habits, as last read, and the panel that shows them (see habits.go).
+	habits     []api.Habit
+	showHabits bool
+	habitRow   int
 }
 
 // detail is the open task.
@@ -165,7 +171,7 @@ func New(ctx context.Context, opts Options) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.load(), m.follow(), m.nextEvent(), tick(), tea.RequestBackgroundColor)
+	return tea.Batch(m.load(), m.loadHabits(), m.follow(), m.nextEvent(), tick(), tea.RequestBackgroundColor)
 }
 
 // load reads the list: every open task, the most recently finished ones, and
@@ -310,11 +316,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case eventMsg:
-		var cmd tea.Cmd
+		var cmd, habits tea.Cmd
 		if msg.Version != m.version {
 			cmd = m.refresh()
 		}
-		return m, tea.Batch(cmd, m.nextEvent())
+		// Habits have their own event. After a reconnect ("hello") they may have changed unheard.
+		if msg.Type == "habits" || msg.Type == "hello" {
+			habits = m.loadHabits()
+		}
+		return m, tea.Batch(cmd, habits, m.nextEvent())
+
+	case habitsMsg:
+		return m.habitsLoaded(msg), nil
+
+	case habitChangedMsg:
+		return m.habitChanged(msg)
 
 	case stateMsg:
 		if msg.Connected {
@@ -381,6 +397,9 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.clamp()
 		return m, nil
 	}
+	if m.showHabits {
+		return m.habitsKey(msg)
+	}
 	if m.detail != nil {
 		switch {
 		case key.Matches(msg, m.keys.Back), msg.String() == "q":
@@ -426,7 +445,9 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case len(msg.String()) == 1 && msg.String() >= "1" && msg.String() <= "5":
 		m.focus = focus(msg.String()[0] - '1')
 	case key.Matches(msg, m.keys.Refresh):
-		return m, m.refresh()
+		return m, tea.Batch(m.refresh(), m.loadHabits())
+	case key.Matches(msg, m.keys.Habits) && len(m.habits) > 0:
+		m.showHabits = true
 	case key.Matches(msg, m.keys.Left):
 		m.moveColumn(cols, -1)
 	case key.Matches(msg, m.keys.Right):
