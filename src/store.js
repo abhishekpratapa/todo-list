@@ -84,18 +84,18 @@ function sleep(ms) {
   }
 }
 
-function acquireLock() {
+function acquireLock(lockDir = LOCK_DIR) {
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
     try {
-      fs.mkdirSync(LOCK_DIR);
+      fs.mkdirSync(lockDir);
       return;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
     }
     try {
-      if (Date.now() - fs.statSync(LOCK_DIR).mtimeMs > LOCK_STALE_MS) {
-        fs.rmdirSync(LOCK_DIR);
+      if (Date.now() - fs.statSync(lockDir).mtimeMs > LOCK_STALE_MS) {
+        fs.rmdirSync(lockDir);
         continue;
       }
     } catch {
@@ -103,6 +103,17 @@ function acquireLock() {
     }
     if (Date.now() > deadline) throw new TodoError('Timed out waiting for the todo store lock');
     sleep(15);
+  }
+}
+
+// Runs fn() while holding the lock at `lockDir`. Habits keep their own file and
+// lock (see habits.js) and take it the same way the todo store takes its own.
+export function withLock(lockDir, fn) {
+  acquireLock(lockDir);
+  try {
+    return fn();
+  } finally {
+    fs.rmdirSync(lockDir);
   }
 }
 

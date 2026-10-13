@@ -133,9 +133,9 @@ curl -sS https://your-mac.your-tailnet.ts.net/api/v1/capture \
 
 ### The API
 
-`docs/openapi.json` documents every endpoint under `/api/v1`: tasks (list, filter, search, create, edit, complete, delete), subtasks, comments, history, quick capture, what's due, the daily summary, and live updates. Send the access token as `Authorization: Bearer …`.
+`docs/openapi.json` documents every endpoint under `/api/v1`: tasks (list, filter, search, create, edit, complete, delete), subtasks, comments, history, quick capture, what's due, the daily summary, habits (see [Habits](#habits)), and live updates. Send the access token as `Authorization: Bearer …`.
 
-`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3; the release with the `todos` command is revision 4 (`/info`, and the API on the local socket).
+`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3; the release with the `todos` command is revision 4 (`/info`, and the API on the local socket); habits are revision 5 (everything under `/habits`, and a `habits` live update).
 
 Any change can carry an `Idempotency-Key` header (8 to 64 letters, digits, hyphens or underscores; a UUID works). Sending the same change again with the same key does nothing the second time and answers with the task as it is now, so a script or app can retry after a timeout without adding a task twice. `/capture` also takes an optional `at`, the moment a line was typed, for lines that reach the Mac later: "tomorrow" is then read from that moment.
 
@@ -182,7 +182,7 @@ The command may also start the app on the Mac over SSH (`ssh your-mac open -g -a
 
 ### Is the app there?
 
-`GET /health` answers `{"status":"ok","appVersion":"…","apiVersion":{"version":1,"revision":4}}` as soon as the server is ready, on the socket and on the port, with no sign-in. It says nothing about your list. `GET /api/v1/info` adds `minClientVersions`, the oldest version of each client (`cli`, `ios`) that still works with this app.
+`GET /health` answers `{"status":"ok","appVersion":"…","apiVersion":{"version":1,"revision":5}}` as soon as the server is ready, on the socket and on the port, with no sign-in. It says nothing about your list. `GET /api/v1/info` adds `minClientVersions`, the oldest version of each client (`cli`, `ios`) that still works with this app.
 
 ```bash
 curl --unix-socket ~/Library/Application\ Support/Todos/todos.sock http://todos/health
@@ -191,6 +191,39 @@ curl --unix-socket ~/Library/Application\ Support/Todos/todos.sock http://todos/
 ## Menu bar
 
 The check icon in the menu bar shows how many tasks are overdue or due today. Click it to see what's overdue, due today, coming in the next 7 days, and undated, and click a task to open it. **New Task…** opens quick capture. Hide the icon with **Todos → Show in Menu Bar**.
+
+## Habits
+
+A habit is a routine you check in on: brushing your teeth morning and evening, the gym three times a week. Unlike a repeating task it leaves nothing behind on the board. It keeps a history of check-ins instead, and a streak worked out from them.
+
+Habits are in the API from revision 5 (`/api/v1/habits`, in [`docs/openapi.json`](docs/openapi.json)). The Mac is where they are kept and where every streak is worked out, so every client shows the same numbers.
+
+### What a habit is
+
+- **Slots.** A habit is done at set times of day, its slots: "Morning" and "Evening", each with a reminder time, a window it belongs in (it may run past midnight) and optionally a second reminder if it still isn't done. It is scheduled **every day** or on **chosen days of the week**. Times are local wherever you are: 07:30 is 07:30 at home and abroad.
+- **Or a number of days a week**, whichever they are: "gym, 3 times a week". This kind has no slots, and its streak is counted in weeks. Weeks run Monday to Sunday.
+- **The habit's day** runs from its day start, 03:00 unless you change it, to the next. Brushing at 00:30 counts for the evening before.
+
+### Streaks
+
+| | |
+|---|---|
+| **A day counts** | when every slot has a check-in. One of two shows as 1/2 and doesn't count. |
+| **The streak** | is the days that counted in a row up to now. Days the habit isn't scheduled, is paused or was skipped are passed over: they neither break it nor add to it. Today, unfinished, never breaks it. |
+| **Late logging** | Yesterday can be logged until today ends, and nothing further back. It is marked as logged late. Until then an unfinished yesterday puts the streak *at risk* rather than ending it. |
+| **Days a week** | A week counts when enough different days have a check-in (two in one day is one). The week under way never breaks the streak; last week can still be saved by logging its Sunday on Monday. The week a habit begins in counts if it was met and is held against no one if not. |
+| **Skipping** | A rest day (sick, travelling) neither breaks the streak nor adds to it. Today or yesterday only, and at most 2 days in any 7 and 6 in any 30; for a habit counted in weeks, one week in any 4. A day that gets done anyway uses nothing up. |
+| **Pausing** | For a longer break. No limit: a paused habit expects nothing and its streak waits. Archiving puts a habit away with its history; deleting removes the history too. |
+| **Rates** | Over the last 7, 30 and 365 days: slots checked in out of slots scheduled, leaving out skipped and paused days. |
+| **Changing a habit** | A new schedule counts from the day you change it (a new weekly target, from next week). The days before are judged by the schedule they had. |
+
+### Check-ins from several devices
+
+Check-ins are only ever added. If your phone and the `todos` command both check in the same slot, not knowing about each other, both are kept in the history and the slot counts once. Undoing names the check-ins it takes back, so an undo that arrives late from a phone that was offline can't remove a check-in made somewhere else in the meantime. A check-in sent late says when it was really made and is judged as of then: one made on Monday and delivered on Thursday is Monday's.
+
+### Travel and clock changes
+
+A check-in counts for the date where it was made. Fly east over the date line and the same date comes round twice: it counts once. Fly west and a date is cut short: skip it. "Today" follows the time zone your devices last reported, so every client agrees on the day. Because days are dates and not 24-hour stretches, the spring and autumn clock changes don't affect anything.
 
 ## Using the app
 
@@ -279,6 +312,8 @@ You can ask Claude things like:
 ## Data
 
 Everything lives in `~/Library/Application Support/Todos/data/todos.json`, a plain JSON file that's easy to back up or inspect. The app, the dev server, and every MCP process all use this file, no matter where the code runs from. Writes use a lock directory plus an atomic rename, so the app and any number of Claude sessions can write at the same time safely.
+
+Habits and their check-ins are in `habits.json` in the same folder, written the same way under a lock of its own. Nothing about habits is ever written to `todos.json`, so a Claude session still running an older copy of the MCP server can neither see nor damage them. The first time a habit is saved, the todo list as it was is copied to `todos.json.before-habits`, once. Setting `TODO_DATA_FILE` moves both files, since `habits.json` goes wherever the todo file is.
 
 ## Development
 

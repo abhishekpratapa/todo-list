@@ -3,7 +3,7 @@
   "info": {
     "title": "Todos API",
     "version": "1",
-    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**On the Mac itself.** While the app runs, the same API is also served on a Unix domain socket that only your user can open: `~/Library/Application Support/Todos/todos.sock` (or `TODOS_SOCKET`). There it needs no token, and it is there whether Remote Access is on or off. This is how the `todos` command reaches the app. A few operations exist only on the socket, and a few only at the network address; each says so, and is marked `x-todos-only-on` (`socket` or `port`). Where an operation is not served, its path is answered exactly like one that does not exist.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible on the Mac itself: in the app, or from the `todos` command through the local socket (`/tasks/{id}/claude-session`).\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision, and `GET /info` adds how old a client may be. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
+    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**On the Mac itself.** While the app runs, the same API is also served on a Unix domain socket that only your user can open: `~/Library/Application Support/Todos/todos.sock` (or `TODOS_SOCKET`). There it needs no token, and it is there whether Remote Access is on or off. This is how the `todos` command reaches the app. A few operations exist only on the socket, and a few only at the network address; each says so, and is marked `x-todos-only-on` (`socket` or `port`). Where an operation is not served, its path is answered exactly like one that does not exist.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible on the Mac itself: in the app, or from the `todos` command through the local socket (`/tasks/{id}/claude-session`).\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision, and `GET /info` adds how old a client may be. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Habits.** Everything under `/habits` (revision 5). Check-ins are only ever added: a slot checked in twice, by two devices that did not know about each other, keeps both check-ins and counts once, and undoing names the check-ins it removes. Changes to habits are announced on `/events` as `habits`, separately from `change`.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
   },
   "servers": [
     {
@@ -47,6 +47,10 @@
     },
     {
       "name": "Start with Claude"
+    },
+    {
+      "name": "Habits",
+      "description": "Routines to check in on, with streaks. Added in revision 5. A habit is done at set times of day (its slots) every day or on chosen weekdays, or a number of days a week. A habit day runs from the habit's `dayStart` (03:00 unless changed) to the next, so brushing at 00:30 counts for the evening before. Streaks are worked out by the server only, from the check-ins, so every client shows the same numbers."
     }
   ],
   "paths": {
@@ -433,7 +437,7 @@
           "Overview"
         ],
         "summary": "Live updates",
-        "description": "A server-sent event stream. Sends `hello` on connect and `change` whenever anything in the list changes, each with `{\"version\": n}`. Fetch what you need again when one arrives. A comment line arrives every 25 seconds to keep the connection open. Browsers must rely on the cookie here, since EventSource cannot send headers.",
+        "description": "A server-sent event stream. Sends `hello` on connect and `change` whenever anything in the list changes, each with `{\"version\": n}`. Fetch what you need again when one arrives. Since revision 5, `habits` is sent whenever a habit or a check-in changes, with `{\"version\": n, \"habits\": m}`: `habits` is the habits' own version, and `version` is still the list's, unchanged. A change to habits does not send `change`, and a change to tasks does not send `habits`. A comment line arrives every 25 seconds to keep the connection open. Browsers must rely on the cookie here, since EventSource cannot send headers.",
         "responses": {
           "200": {
             "description": "The event stream.",
@@ -2563,6 +2567,1437 @@
           }
         }
       }
+    },
+    "/habits": {
+      "get": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "List habits",
+        "description": "Every habit with how today stands and its streak. `zone` is the time zone \"today\" is being told by, and `version` the number the `habits` live update announces.",
+        "parameters": [
+          {
+            "name": "archived",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "true to include archived habits."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The habits.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habits",
+                    "zone",
+                    "version"
+                  ],
+                  "properties": {
+                    "habits": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Habit"
+                      }
+                    },
+                    "zone": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "Create a habit",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "schedule"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "type": "string"
+                  },
+                  "dayStart": {
+                    "type": "string",
+                    "example": "03:00"
+                  },
+                  "schedule": {
+                    "$ref": "#/components/schemas/HabitSchedule"
+                  },
+                  "paused": {
+                    "type": "boolean"
+                  },
+                  "archived": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new habit.",
+            "headers": {
+              "ETag": {
+                "description": "The habit's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habit"
+                  ],
+                  "properties": {
+                    "habit": {
+                      "$ref": "#/components/schemas/Habit"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/habits/zone": {
+      "post": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "Report the time zone the user is in",
+        "description": "For a device that travels with the user. \"Today\" is told by the zone most recently reported, here or with a check-in, so every client agrees on the day even before the next check-in.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "zone"
+                ],
+                "properties": {
+                  "zone": {
+                    "type": "string",
+                    "example": "Asia/Tokyo"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The zone now in use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "zone": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/habits/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Habit id."
+        }
+      ],
+      "get": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "Get a habit",
+        "responses": {
+          "200": {
+            "description": "The habit.",
+            "headers": {
+              "ETag": {
+                "description": "The habit's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habit"
+                  ],
+                  "properties": {
+                    "habit": {
+                      "$ref": "#/components/schemas/Habit"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such habit or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "Edit a habit",
+        "description": "Send only the fields to change. `schedule` is replaced whole: send every slot, with its id. `paused` and `archived` take effect today.",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The rev of the habit this change is based on, as returned in the ETag header or habit.rev, e.g. \"3\". Use * to overwrite regardless.",
+            "example": "\"3\""
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "type": "string"
+                  },
+                  "dayStart": {
+                    "type": "string",
+                    "example": "03:00"
+                  },
+                  "schedule": {
+                    "$ref": "#/components/schemas/HabitSchedule"
+                  },
+                  "paused": {
+                    "type": "boolean"
+                  },
+                  "archived": {
+                    "type": "boolean"
+                  },
+                  "rev": {
+                    "type": "integer",
+                    "description": "Instead of If-Match."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The habit after the edit.",
+            "headers": {
+              "ETag": {
+                "description": "The habit's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habit"
+                  ],
+                  "properties": {
+                    "habit": {
+                      "$ref": "#/components/schemas/Habit"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such habit or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The habit has changed since the revision you sent. error.current is the habit as it is now; nothing was changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HabitConflictError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "An edit or delete was sent without a revision. Send If-Match with the habit's rev.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "Delete a habit",
+        "description": "Deletes the habit and everything it recorded. To stop without losing the history, archive it instead.",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The rev of the habit this change is based on, as returned in the ETag header or habit.rev, e.g. \"3\". Use * to overwrite regardless.",
+            "example": "\"3\""
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such habit or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The habit has changed since the revision you sent. error.current is the habit as it is now; nothing was changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HabitConflictError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "An edit or delete was sent without a revision. Send If-Match with the habit's rev.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/habits/{id}/history": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Habit id."
+        }
+      ],
+      "get": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "A stretch of a habit's past",
+        "description": "For a calendar. `days` has one character per day from `from` to `to`: d done, p partial, x missed, s skipped, o open, . nothing expected, _ still to come. For a habit counted in weeks, d marks a day with a check-in and s the other days of a skipped week, and `weeks` says how each week went.",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "First day, YYYY-MM-DD. 364 days before `to`, if left out."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Last day, YYYY-MM-DD. Today, if left out. At most 800 days after `from`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The days, and the check-ins and skips behind them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "today": {
+                      "type": "string"
+                    },
+                    "days": {
+                      "type": "string"
+                    },
+                    "weeks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "start": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string"
+                          },
+                          "count": {
+                            "type": "integer"
+                          },
+                          "target": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/HabitCheckin"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such habit or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/habits/{id}/checkins": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Habit id."
+        }
+      ],
+      "post": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "Check in",
+        "description": "Records that the habit, or one slot of it, was done. Needs no revision. With no body it is for now, and for the slot still to do: if several are, the one whose window this is, else the earliest. Checking in a slot that is already done adds a second check-in and changes nothing else.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slot": {
+                    "type": "string",
+                    "description": "A slot's id or name. Not for a habit counted in weeks.",
+                    "example": "evening"
+                  },
+                  "at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When it really happened, for a device that was offline at the time. It is judged as of then: a check-in made on Monday and delivered on Thursday is Monday's. Now, if left out. Not in the future."
+                  },
+                  "zone": {
+                    "type": "string",
+                    "description": "The IANA time zone the device was in, e.g. America/Chicago. It decides which day the moment belongs to, and from then on which day is \"today\" for every client. The zone last reported, if left out.",
+                    "example": "America/Chicago"
+                  },
+                  "day": {
+                    "type": "string",
+                    "description": "The habit day it is for: a date (YYYY-MM-DD), \"today\" or \"yesterday\". Yesterday can be logged until today ends, and nothing further back. The day of `at`, if left out.",
+                    "example": "yesterday"
+                  },
+                  "source": {
+                    "enum": [
+                      "manual",
+                      "notification",
+                      "widget",
+                      "shortcut",
+                      "claude",
+                      "health"
+                    ],
+                    "default": "manual"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Nothing was left to check in (and no slot was named), or this Idempotency-Key was already used.",
+            "headers": {
+              "ETag": {
+                "description": "The habit's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habit"
+                  ],
+                  "properties": {
+                    "habit": {
+                      "$ref": "#/components/schemas/Habit"
+                    },
+                    "checkin": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/HabitCheckin"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Checked in.",
+            "headers": {
+              "ETag": {
+                "description": "The habit's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habit"
+                  ],
+                  "properties": {
+                    "habit": {
+                      "$ref": "#/components/schemas/Habit"
+                    },
+                    "checkin": {
+                      "$ref": "#/components/schemas/HabitCheckin"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such habit or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/habits/{id}/undo": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Habit id."
+        }
+      ],
+      "post": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "Take a check-in or a skip back",
+        "description": "Name what to remove with `checkins` (ids) or `keys` (the Idempotency-Keys they were sent with); those are removed whatever day they are for. Or say `slot` and `day` for every check-in of that slot, `day` alone for every check-in that day, or `skip: true` for that day's skip; these work for today and yesterday. A device that was offline should name what it saw, so its undo cannot remove a check-in made somewhere else in the meantime. Undoing something that is not there changes nothing.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "checkins": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "slot": {
+                    "type": "string"
+                  },
+                  "day": {
+                    "type": "string",
+                    "description": "The habit day it is for: a date (YYYY-MM-DD), \"today\" or \"yesterday\". Yesterday can be logged until today ends, and nothing further back. The day of `at`, if left out.",
+                    "example": "yesterday"
+                  },
+                  "skip": {
+                    "type": "boolean"
+                  },
+                  "at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When it really happened, for a device that was offline at the time. It is judged as of then: a check-in made on Monday and delivered on Thursday is Monday's. Now, if left out. Not in the future."
+                  },
+                  "zone": {
+                    "type": "string",
+                    "description": "The IANA time zone the device was in, e.g. America/Chicago. It decides which day the moment belongs to, and from then on which day is \"today\" for every client. The zone last reported, if left out.",
+                    "example": "America/Chicago"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The habit afterwards.",
+            "headers": {
+              "ETag": {
+                "description": "The habit's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habit"
+                  ],
+                  "properties": {
+                    "habit": {
+                      "$ref": "#/components/schemas/Habit"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such habit or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/habits/{id}/skips": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Habit id."
+        }
+      ],
+      "post": {
+        "tags": [
+          "Habits"
+        ],
+        "summary": "Skip a day",
+        "description": "Marks today or yesterday as a rest day: it neither breaks the streak nor adds to it. For a habit counted in weeks, it is the week that is skipped. Refused with `skip_limit` beyond 2 days in any 7 and 6 in any 30 (one week in any 4); a longer break is a pause. A day that is done anyway uses nothing up.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "day": {
+                    "type": "string",
+                    "description": "The habit day it is for: a date (YYYY-MM-DD), \"today\" or \"yesterday\". Yesterday can be logged until today ends, and nothing further back. The day of `at`, if left out.",
+                    "example": "yesterday"
+                  },
+                  "at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When it really happened, for a device that was offline at the time. It is judged as of then: a check-in made on Monday and delivered on Thursday is Monday's. Now, if left out. Not in the future."
+                  },
+                  "zone": {
+                    "type": "string",
+                    "description": "The IANA time zone the device was in, e.g. America/Chicago. It decides which day the moment belongs to, and from then on which day is \"today\" for every client. The zone last reported, if left out.",
+                    "example": "America/Chicago"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "description": "For the history, e.g. \"flu\"."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "There was nothing to skip: the day is done, off, or skipped already.",
+            "headers": {
+              "ETag": {
+                "description": "The habit's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habit"
+                  ],
+                  "properties": {
+                    "habit": {
+                      "$ref": "#/components/schemas/Habit"
+                    },
+                    "skip": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/HabitCheckin"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Skipped.",
+            "headers": {
+              "ETag": {
+                "description": "The habit's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "habit"
+                  ],
+                  "properties": {
+                    "habit": {
+                      "$ref": "#/components/schemas/Habit"
+                    },
+                    "skip": {
+                      "$ref": "#/components/schemas/HabitCheckin"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid, or a rule refused it. See error.code (invalid, invalid_json, unknown_field, too_late, too_early, skip_limit, no_such_slot, archived) and error.message, which is written to be shown to the user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such habit or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2857,7 +4292,7 @@
             "properties": {
               "code": {
                 "type": "string",
-                "description": "Stable, for programs: unauthorized, forbidden, forbidden_host, forbidden_origin, forbidden_user, not_found, method_not_allowed, invalid, invalid_json, unknown_field, unsupported_media_type, too_large, precondition_required, conflict, rate_limited, busy, internal."
+                "description": "Stable, for programs: unauthorized, forbidden, forbidden_host, forbidden_origin, forbidden_user, not_found, method_not_allowed, invalid, invalid_json, unknown_field, unsupported_media_type, too_large, precondition_required, conflict, rate_limited, busy, internal; and for habits: too_late, too_early, skip_limit, no_such_slot, archived."
               },
               "message": {
                 "type": "string",
@@ -2881,6 +4316,643 @@
               },
               "current": {
                 "$ref": "#/components/schemas/Task"
+              }
+            }
+          }
+        }
+      },
+      "HabitSlot": {
+        "type": "object",
+        "description": "A time of day a habit is done at. Times are local and floating: 07:30 means 07:30 wherever the user is.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable, lower-case. Made from the name if left out when creating. Send it back when editing, so the slot keeps its history.",
+            "example": "morning"
+          },
+          "name": {
+            "type": "string",
+            "example": "Morning"
+          },
+          "remind": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "When to be reminded, HH:MM.",
+                "example": "07:30"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Start of the window the slot belongs in, HH:MM. With `until`; the window may run past midnight.",
+                "example": "05:00"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "until": {
+            "oneOf": [
+              {
+                "type": "string",
+                "example": "11:00"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nudge": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "When to be reminded again if it still is not done, HH:MM.",
+                "example": "22:30"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "HabitSchedule": {
+        "description": "When a habit is meant to be done. A change counts from the day it is made (a new weekly target, from next week); earlier days keep the schedule they had. A habit counted in days cannot become one counted in weeks, or the other way round.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "slots"
+            ],
+            "properties": {
+              "kind": {
+                "const": "daily"
+              },
+              "slots": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/HabitSlot"
+                },
+                "minItems": 1,
+                "maxItems": 6
+              }
+            },
+            "description": "Every day. A day counts when every slot has a check-in."
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "days",
+              "slots"
+            ],
+            "properties": {
+              "kind": {
+                "const": "days"
+              },
+              "days": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat",
+                    "sun"
+                  ]
+                }
+              },
+              "slots": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/HabitSlot"
+                },
+                "minItems": 1,
+                "maxItems": 6
+              }
+            },
+            "description": "On those days of the week."
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "target"
+            ],
+            "properties": {
+              "kind": {
+                "const": "weekly"
+              },
+              "target": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 7,
+                "description": "How many days a week, whichever they are. Weeks run Monday to Sunday."
+              },
+              "remind": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "days",
+                      "time"
+                    ],
+                    "properties": {
+                      "days": {
+                        "type": "array",
+                        "items": {
+                          "enum": [
+                            "mon",
+                            "tue",
+                            "wed",
+                            "thu",
+                            "fri",
+                            "sat",
+                            "sun"
+                          ]
+                        }
+                      },
+                      "time": {
+                        "type": "string",
+                        "example": "17:30"
+                      }
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "description": "A number of days a week. It has no slots, and its streak is counted in weeks."
+          }
+        ]
+      },
+      "HabitCheckin": {
+        "type": "object",
+        "description": "One event in a habit's history: a check-in (`done`) or a skipped day (`skip`). Events are never edited; undoing one adds an undo that names it.",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "habit": {
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "done",
+              "skip"
+            ]
+          },
+          "slot": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "day": {
+            "type": "string",
+            "description": "The habit day it counts for, YYYY-MM-DD. For a skipped week, its Monday."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it happened."
+          },
+          "zone": {
+            "type": "string",
+            "description": "The time zone it happened in."
+          },
+          "by": {
+            "type": "string",
+            "description": "\"me\", or the Claude session that logged it."
+          },
+          "via": {
+            "type": "string",
+            "description": "The device or client it came through. Absent for the Mac app itself."
+          },
+          "source": {
+            "enum": [
+              "manual",
+              "notification",
+              "widget",
+              "shortcut",
+              "claude",
+              "health"
+            ],
+            "description": "How a check-in was made."
+          },
+          "backfilled": {
+            "type": "boolean",
+            "description": "True when it was logged the day after."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why a day was skipped, if given."
+          },
+          "key": {
+            "type": "string",
+            "description": "The Idempotency-Key it was sent with, if any."
+          },
+          "undone": {
+            "type": "boolean",
+            "description": "In a history: true when it has been taken back."
+          }
+        }
+      },
+      "HabitDay": {
+        "type": "object",
+        "description": "One day of a habit with slots.",
+        "properties": {
+          "day": {
+            "type": "string",
+            "description": "YYYY-MM-DD."
+          },
+          "state": {
+            "enum": [
+              "off",
+              "done",
+              "skipped",
+              "open",
+              "partial",
+              "missed"
+            ],
+            "description": "off: not scheduled, paused, or before the habit began. done: every slot has a check-in. skipped: a rest day. open: not done, and still loggable (today or yesterday). partial and missed: too late."
+          },
+          "done": {
+            "type": "integer",
+            "description": "Slots checked in."
+          },
+          "total": {
+            "type": "integer",
+            "description": "Slots that count that day."
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "done"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "done": {
+                  "type": "boolean"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When it was first checked in."
+                },
+                "by": {
+                  "type": "string"
+                },
+                "via": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "checkins": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "description": "The check-ins it has: what an undo would name. More than one when two devices both checked it in."
+                }
+              }
+            }
+          }
+        }
+      },
+      "HabitSession": {
+        "type": "object",
+        "description": "One day of a habit counted in weeks.",
+        "properties": {
+          "day": {
+            "type": "string"
+          },
+          "done": {
+            "type": "boolean"
+          },
+          "checkins": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "HabitStreak": {
+        "type": "object",
+        "properties": {
+          "current": {
+            "type": "integer",
+            "description": "Days (or weeks) in a row that counted, up to now. Days that are off, skipped, or still open are passed over: they neither break it nor add to it."
+          },
+          "best": {
+            "type": "integer",
+            "description": "The longest it has ever been."
+          },
+          "unit": {
+            "enum": [
+              "days",
+              "weeks"
+            ]
+          },
+          "atRisk": {
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Yesterday is unfinished and there is a streak behind it. It survives if `missing` is logged for `day` before `until`.",
+                "properties": {
+                  "day": {
+                    "type": "string"
+                  },
+                  "week": {
+                    "type": "string",
+                    "description": "For a habit counted in weeks: the Monday of the week that is one day short."
+                  },
+                  "missing": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The slots still to log."
+                  },
+                  "until": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "previous": {
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "The streak before this one, for saying kindly that it ended: its length and its last day (or, in weeks, its last week's Monday).",
+                "properties": {
+                  "length": {
+                    "type": "integer"
+                  },
+                  "lastDay": {
+                    "type": "string"
+                  },
+                  "lastWeek": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Habit": {
+        "type": "object",
+        "description": "A habit, how today stands, and its streak. `today` and `yesterday` are a HabitDay for a habit with slots and a HabitSession for one counted in weeks, which also has `week` and `lastWeek`.",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string",
+            "example": "Brush teeth"
+          },
+          "icon": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "An emoji.",
+                "example": "🪥"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "color": {
+            "enum": [
+              "red",
+              "orange",
+              "yellow",
+              "green",
+              "mint",
+              "teal",
+              "blue",
+              "indigo",
+              "purple",
+              "pink",
+              "gray"
+            ]
+          },
+          "dayStart": {
+            "type": "string",
+            "description": "When this habit's day begins, HH:MM. A check-in before it counts for the day before.",
+            "default": "03:00"
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/HabitSchedule"
+          },
+          "paused": {
+            "type": "boolean",
+            "description": "A paused habit expects nothing, and its streak waits."
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Put away, with its history kept. Left out of the list unless asked for."
+          },
+          "rev": {
+            "type": "integer",
+            "description": "Bumped on each edit to the habit itself. Check-ins do not change it."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "today": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HabitDay"
+              },
+              {
+                "$ref": "#/components/schemas/HabitSession"
+              }
+            ]
+          },
+          "yesterday": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HabitDay"
+              },
+              {
+                "$ref": "#/components/schemas/HabitSession"
+              }
+            ],
+            "description": "Still loggable until today ends."
+          },
+          "week": {
+            "type": "object",
+            "description": "Only for a habit counted in weeks: this week so far.",
+            "properties": {
+              "start": {
+                "type": "string",
+                "description": "Its Monday."
+              },
+              "state": {
+                "enum": [
+                  "met",
+                  "skipped",
+                  "open",
+                  "missed",
+                  "off"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "description": "Days with a check-in. Two check-ins on one day count once."
+              },
+              "target": {
+                "type": "integer"
+              },
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "lastWeek": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "start": {
+                    "type": "string",
+                    "description": "Its Monday."
+                  },
+                  "state": {
+                    "enum": [
+                      "met",
+                      "skipped",
+                      "open",
+                      "missed",
+                      "off"
+                    ]
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Days with a check-in. Two check-ins on one day count once."
+                  },
+                  "target": {
+                    "type": "integer"
+                  },
+                  "days": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only for a habit counted in weeks: last week, which can still change until Monday ends. Null when the habit began this week."
+          },
+          "streak": {
+            "$ref": "#/components/schemas/HabitStreak"
+          },
+          "rates": {
+            "type": "object",
+            "description": "How much of what was expected got done over the last 7, 30 and 365 days, from 0 to 1: slots checked in out of slots scheduled (in weeks: days out of the target). Skipped and paused days are left out, and an open day never counts against. Null when nothing was expected.",
+            "properties": {
+              "d7": {
+                "oneOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "d30": {
+                "oneOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "d365": {
+                "oneOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "skipsLeft": {
+            "type": "integer",
+            "description": "How many more days (or weeks) could be skipped right now. At most 2 days in any 7 and 6 in any 30; one week in any 4."
+          }
+        }
+      },
+      "HabitConflictError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "const": "conflict"
+              },
+              "message": {
+                "type": "string"
+              },
+              "current": {
+                "$ref": "#/components/schemas/Habit"
               }
             }
           }

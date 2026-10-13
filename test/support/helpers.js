@@ -120,6 +120,7 @@ export async function boot({ enabled = true, requireOwner = true, handoff = null
         : { host: as === sock ? 'todos' : localHost };
       const req = http.request({ ...target(as === sock ? socketPath : port), method: 'GET', path: pathname, headers: { ...base, ...headers }, setHost: false, agent: false }, (res) => {
         const events = [];
+        const messages = []; // each event with what it carried: { event, data }
         let ended = false;
         let buffer = '';
         res.setEncoding('utf8');
@@ -127,7 +128,10 @@ export async function boot({ enabled = true, requireOwner = true, handoff = null
           buffer += chunk;
           for (let i; (i = buffer.indexOf('\n\n')) >= 0; buffer = buffer.slice(i + 2)) {
             const name = buffer.slice(0, i).match(/^event: (.+)$/m);
-            if (name) events.push(name[1]);
+            if (!name) continue;
+            events.push(name[1]);
+            const data = buffer.slice(0, i).match(/^data: (.+)$/m);
+            messages.push({ event: name[1], data: data ? JSON.parse(data[1]) : null });
           }
         });
         res.on('end', () => { ended = true; });
@@ -142,6 +146,7 @@ export async function boot({ enabled = true, requireOwner = true, handoff = null
         resolve({
           status: res.statusCode,
           events,
+          messages,
           sawEvent: (name, ms) => until(() => events.includes(name), ms),
           closedByServer: (ms) => until(() => ended, ms),
           close: () => req.destroy(),

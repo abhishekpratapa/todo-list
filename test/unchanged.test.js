@@ -1,14 +1,15 @@
-// Nothing that existed before the command-line support has changed: the
-// dashboard, the API the iPhone app uses, remote access (on and off) and the MCP
-// server. This runs the real 1.6.1 code (from the v1.6.1 git tag) next to the
+// Nothing that existed before the command-line support and habits has changed:
+// the dashboard, the API the iPhone app uses, remote access (on and off) and the
+// MCP server. This runs the real 1.6.1 code (from the v1.6.1 git tag) next to the
 // current code, puts both through the same requests from the same starting data,
 // and compares everything they answer. The current server runs with its local
 // socket open, since that is how the app runs it.
 //
 // Known, intended differences, each checked here rather than ignored:
-//   - GET /api/v1/meta reports API revision 4 instead of 3.
-// What is new (GET /health, GET /api/v1/info, the socket and its routes) is
-// tested in socket.test.js and claude-session.test.js.
+//   - GET /api/v1/meta reports API revision 5 instead of 3.
+// What is new (GET /health, GET /api/v1/info, the socket and its routes, and
+// everything under /api/v1/habits) is tested in socket.test.js,
+// claude-session.test.js and habits-api.test.js.
 //
 // When a later version changes one of the dashboard's files on purpose, add its
 // path to CHANGED below; it is then compared by status and headers only.
@@ -339,10 +340,10 @@ test('with remote access on, the API, the dashboard and every refusal are what 1
   const expected = await walk(was, ON, 'browser');
   const actual = await walk(now, ON, 'browser');
   same(actual, expected, {
-    // The one intended difference: the API's revision went from 3 to 4.
+    // The one intended difference: the API's revision went from 3 to 5.
     'phone: GET /api/v1/meta': (after, earlier) => {
       assert.equal(earlier.body.api.revision, 3);
-      assert.equal(after.body.api.revision, 4);
+      assert.equal(after.body.api.revision, 5);
       assert.deepEqual({ ...after, body: { ...after.body, api: { ...after.body.api, revision: 3 } } }, earlier);
     },
   });

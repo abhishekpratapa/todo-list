@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { clearedCookie, sessionCookie } from './auth.js';
+import { checkIn, createHabit, deleteHabit, getHabit, habitHistory, listHabits, setZone, skipDay, undo, updateHabit } from './habits.js';
 import { RequestError, json, readJson, readJsonOrText } from './http.js';
 import { parseQuickAdd } from './quickadd.js';
 import {
@@ -31,8 +32,9 @@ import {
 //   3  Todos 1.6. Idempotency-Key on every change; `at` on /capture and /capture/preview.
 //   4  The release with the command-line client. GET /info; the whole API on the local
 //      socket (see socket.js), where a few routes exist that are served nowhere else.
+//   5  Habits: everything under /habits, and a `habits` event in the live updates.
 export const API_VERSION = 1;
-export const API_REVISION = 4;
+export const API_REVISION = 5;
 const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 // The oldest version of each kind of client that still works with this app. A
@@ -45,6 +47,7 @@ export const MIN_CLIENT_VERSIONS = { cli: '0.1.0', ios: '1.0' };
 export const health = () => ({ status: 'ok', appVersion: APP_VERSION, apiVersion: { version: API_VERSION, revision: API_REVISION } });
 
 const EDITABLE = ['title', 'notes', 'status', 'priority', 'due', 'project', 'tags', 'assignee', 'repeat', 'remindAt'];
+const HABIT_EDITABLE = ['name', 'icon', 'color', 'dayStart', 'schedule', 'paused', 'archived'];
 
 const error = (res, status, code, message, extra = {}) => json(res, status, { error: { code, message, ...extra } });
 
@@ -54,6 +57,11 @@ const brief = ({ activity, ...task }) => ({ ...task, comments: activity.filter((
 function sendTask(res, status, task, extra = {}) {
   res.setHeader('ETag', `"${task.rev}"`);
   json(res, status, { task, ...extra });
+}
+
+function sendHabit(res, status, habit, extra = {}) {
+  res.setHeader('ETag', `"${habit.rev}"`);
+  json(res, status, { habit, ...extra });
 }
 
 // A JSON object containing only the fields this endpoint accepts.
@@ -67,15 +75,15 @@ function only(body, allowed) {
 // The revision a change is based on: If-Match ("3", W/"3" or 3), or `rev` in the
 // body or query. `If-Match: *` means "overwrite whatever is there" and returns
 // null. Leaving it out altogether is refused, so nothing is overwritten by accident.
-function expectedRev(req, fallback) {
+function expectedRev(req, fallback, what = 'task') {
   const header = req.headers['if-match'];
   const raw = header !== undefined ? String(header).trim() : fallback;
   if (raw === undefined || raw === null || raw === '') {
-    throw new RequestError(428, 'precondition_required', 'Say which revision you are changing: send If-Match with the task\'s rev (or "rev" in the body). If-Match: * overwrites regardless.');
+    throw new RequestError(428, 'precondition_required', `Say which revision you are changing: send If-Match with the ${what}'s rev (or "rev" in the body). If-Match: * overwrites regardless.`);
   }
   if (raw === '*') return null;
   const m = String(raw).match(/^(?:W\/)?"?(\d+)"?$/);
-  if (!m) throw new RequestError(400, 'invalid', 'The revision must be the task\'s rev, for example If-Match: "3".');
+  if (!m) throw new RequestError(400, 'invalid', `The revision must be the ${what}'s rev, for example If-Match: "3".`);
   return Number(m[1]);
 }
 
@@ -195,6 +203,8 @@ function subtaskOf(taskId, subtaskId) {
 export function createV1({ remote, openStream, viaLabel, sessions }) {
   // What every change records: who it came through, and its idempotency key if it has one.
   const write = async (req, ctx) => ({ key: idempotencyKey(req), via: await viaLabel(req, ctx) });
+  // The body of a request that may come with none at all.
+  const optional = async (req, ctx, allowed) => (req.headers['content-length'] > 0 ? only(await readJson(req, ctx.bodyLimit), allowed) : {});
 
   // [method, path template, handler({ req, res, ctx, url, params }), where]
   // `where` limits a route to one listener: 'port' or 'socket'. Elsewhere the path
@@ -324,6 +334,52 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
       const daily = dailySummary(todos);
       return json(res, 200, { counts: summarize(todos), daily: daily && { title: daily.title, body: daily.body, tasks: daily.tasks.map(brief) }, date: today() });
     }],
+
+    // Habits: routines to check in on, with streaks (see habits.js). The streaks are
+    // worked out here and nowhere else, so every client shows the same numbers.
+    ['GET', '/habits', ({ res, url }) => {
+      const archived = url.searchParams.get('archived');
+      if (archived !== null && archived !== 'true' && archived !== 'false') throw new RequestError(400, 'invalid', 'archived must be true or false.');
+      return json(res, 200, listHabits({ archived: archived === 'true' }));
+    }],
+    ['POST', '/habits', async ({ req, res, ctx }) => {
+      const habit = createHabit(only(await readJson(req, ctx.bodyLimit), HABIT_EDITABLE), 'me', await write(req, ctx));
+      res.setHeader('Location', `/api/v1/habits/${habit.id}`);
+      return sendHabit(res, 201, habit);
+    }],
+    // Where the user is, from a device that travels with them: "today" follows it.
+    ['POST', '/habits/zone', async ({ req, res, ctx }) => json(res, 200, setZone(only(await readJson(req, ctx.bodyLimit), ['zone']).zone))],
+
+    ['GET', '/habits/{id}', ({ res, params }) => sendHabit(res, 200, getHabit(params.id))],
+    ['PATCH', '/habits/{id}', async ({ req, res, ctx, params }) => {
+      const { rev, ...patch } = only(await readJson(req, ctx.bodyLimit), [...HABIT_EDITABLE, 'rev']);
+      return sendHabit(res, 200, updateHabit(params.id, patch, { ifRev: expectedRev(req, rev, 'habit'), key: idempotencyKey(req) }));
+    }],
+    ['DELETE', '/habits/{id}', ({ req, res, url, params }) => {
+      deleteHabit(params.id, { ifRev: expectedRev(req, url.searchParams.get('rev'), 'habit') });
+      res.writeHead(204);
+      return res.end();
+    }],
+    ['GET', '/habits/{id}/history', ({ res, url, params }) =>
+      json(res, 200, habitHistory(params.id, { from: url.searchParams.get('from') ?? undefined, to: url.searchParams.get('to') ?? undefined }))],
+
+    // Check-ins need no revision: they are only ever added, and a slot checked in
+    // twice counts once. `at` and `zone` say when and where it really happened, for
+    // a device that was offline at the time.
+    ['POST', '/habits/{id}/checkins', async ({ req, res, ctx, params }) => {
+      const body = await optional(req, ctx, ['slot', 'at', 'zone', 'day', 'source']);
+      const { habit, checkin } = checkIn(params.id, body, 'me', await write(req, ctx));
+      return sendHabit(res, checkin ? 201 : 200, habit, { checkin });
+    }],
+    ['POST', '/habits/{id}/undo', async ({ req, res, ctx, params }) => {
+      const body = await optional(req, ctx, ['checkins', 'keys', 'slot', 'day', 'skip', 'at', 'zone']);
+      return sendHabit(res, 200, undo(params.id, body, 'me', await write(req, ctx)).habit);
+    }],
+    ['POST', '/habits/{id}/skips', async ({ req, res, ctx, params }) => {
+      const body = await optional(req, ctx, ['day', 'at', 'zone', 'reason']);
+      const { habit, skip } = skipDay(params.id, body, 'me', await write(req, ctx));
+      return sendHabit(res, skip ? 201 : 200, habit, { skip });
+    }],
   ].map(([method, template, handler, where]) => ({
     method,
     template,
@@ -355,7 +411,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
     if (e instanceof ConflictError) return error(res, 409, 'conflict', e.message, { current: e.current });
     if (e instanceof NotFoundError) return error(res, 404, 'not_found', e.message);
     if (e instanceof RequestError) return error(res, e.status, e.code, e.message);
-    if (e instanceof TodoError) return error(res, 400, 'invalid', e.message);
+    if (e instanceof TodoError) return error(res, 400, e.code || 'invalid', e.message); // habits.js gives some refusals a code of their own
     console.error(e);
     return error(res, 500, 'internal', 'Internal error');
   };

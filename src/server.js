@@ -23,6 +23,7 @@ import {
   load, getTodo, createTodo, updateTodo, deleteTodo, summarize, sortTodos, watchStore,
 } from './store.js';
 import { parseQuickAdd } from './quickadd.js';
+import { habitsState, watchHabits } from './habits.js';
 import { COOKIE, bearerToken, parseCookies, rateLimiter } from './auth.js';
 import { json, readJson } from './http.js';
 import { createV1, health } from './api-v1.js';
@@ -116,6 +117,18 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
   }
 
   const unwatch = watchStore(broadcast);
+
+  // Habits change on their own, in their own file, and are announced under their
+  // own name, so a client that knows nothing of habits never reloads the todo
+  // list for one. `version` is still the todo list's, unchanged, for clients that
+  // read that number from every event.
+  let lastHabits = habitsState();
+  const unwatchHabits = watchHabits(() => {
+    const habits = habitsState();
+    if (!habits || (habits.version === lastHabits?.version && habits.updatedAt === lastHabits?.updatedAt)) return;
+    lastHabits = habits;
+    for (const res of streams.keys()) res.write(`event: habits\ndata: ${JSON.stringify({ version: lastVersion, habits: habits.version })}\n\n`);
+  });
   const heartbeat = setInterval(() => {
     for (const res of streams.keys()) res.write(': ping\n\n');
   }, 25_000);
@@ -407,6 +420,7 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
 
   function close() {
     unwatch();
+    unwatchHabits();
     unsubscribe?.();
     clearInterval(heartbeat);
     for (const res of streams.keys()) res.end();
