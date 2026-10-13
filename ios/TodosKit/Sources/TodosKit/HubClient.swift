@@ -102,8 +102,8 @@ public struct HubClient: Sendable {
 
     /// Edits a task. `rev` is the revision the edit is based on: if the task has
     /// changed since, this throws `HubError.conflict` with the current task and nothing is changed.
-    public func update(_ id: Int, rev: Int, _ patch: TaskPatch) async throws -> TaskResult {
-        try await taskResult("PATCH", "/tasks/\(id)", body: patch, headers: ["If-Match": "\"\(rev)\""])
+    public func update(_ id: Int, rev: Int, _ patch: TaskPatch, key: UUID? = nil) async throws -> TaskResult {
+        try await taskResult("PATCH", "/tasks/\(id)", body: patch, headers: Self.keyed(key, ["If-Match": "\"\(rev)\""]))
     }
 
     /// Deletes a task, with the same revision check as `update`.
@@ -111,31 +111,38 @@ public struct HubClient: Sendable {
         _ = try await send("DELETE", "/tasks/\(id)", headers: ["If-Match": "\"\(rev)\""])
     }
 
+    /// A change that might be sent twice (a retry after a lost answer, or a change
+    /// queued while offline) carries a key. The Mac makes it once.
+    static func keyed(_ key: UUID?, _ headers: [String: String] = [:]) -> [String: String] {
+        guard let key else { return headers }
+        return headers.merging(["Idempotency-Key": key.uuidString]) { $1 }
+    }
+
     /// Marks a task done. Needs no revision: completing can't overwrite anyone's work.
-    public func complete(_ id: Int, comment: String? = nil) async throws -> TaskResult {
-        try await taskResult("POST", "/tasks/\(id)/complete", body: comment.map { ["comment": $0] })
+    public func complete(_ id: Int, comment: String? = nil, key: UUID? = nil) async throws -> TaskResult {
+        try await taskResult("POST", "/tasks/\(id)/complete", body: comment.map { ["comment": $0] }, headers: Self.keyed(key))
     }
 
     // MARK: Subtasks and comments (additive: no revision needed)
 
-    public func addSubtask(_ id: Int, title: String) async throws -> TodoTask {
-        try await taskResult("POST", "/tasks/\(id)/subtasks", body: ["title": title]).task
+    public func addSubtask(_ id: Int, title: String, key: UUID? = nil) async throws -> TodoTask {
+        try await taskResult("POST", "/tasks/\(id)/subtasks", body: ["title": title], headers: Self.keyed(key)).task
     }
 
-    public func setSubtask(_ id: Int, subtask: Int, done: Bool) async throws -> TodoTask {
-        try await taskResult("PATCH", "/tasks/\(id)/subtasks/\(subtask)", body: ["done": done]).task
+    public func setSubtask(_ id: Int, subtask: Int, done: Bool, key: UUID? = nil) async throws -> TodoTask {
+        try await taskResult("PATCH", "/tasks/\(id)/subtasks/\(subtask)", body: ["done": done], headers: Self.keyed(key)).task
     }
 
-    public func renameSubtask(_ id: Int, subtask: Int, title: String) async throws -> TodoTask {
-        try await taskResult("PATCH", "/tasks/\(id)/subtasks/\(subtask)", body: ["title": title]).task
+    public func renameSubtask(_ id: Int, subtask: Int, title: String, key: UUID? = nil) async throws -> TodoTask {
+        try await taskResult("PATCH", "/tasks/\(id)/subtasks/\(subtask)", body: ["title": title], headers: Self.keyed(key)).task
     }
 
-    public func removeSubtask(_ id: Int, subtask: Int) async throws -> TodoTask {
-        try await taskResult("DELETE", "/tasks/\(id)/subtasks/\(subtask)").task
+    public func removeSubtask(_ id: Int, subtask: Int, key: UUID? = nil) async throws -> TodoTask {
+        try await taskResult("DELETE", "/tasks/\(id)/subtasks/\(subtask)", headers: Self.keyed(key)).task
     }
 
-    public func addComment(_ id: Int, text: String) async throws -> TodoTask {
-        try await taskResult("POST", "/tasks/\(id)/comments", body: ["text": text]).task
+    public func addComment(_ id: Int, text: String, key: UUID? = nil) async throws -> TodoTask {
+        try await taskResult("POST", "/tasks/\(id)/comments", body: ["text": text], headers: Self.keyed(key)).task
     }
 
     // MARK: Quick capture
@@ -146,8 +153,31 @@ public struct HubClient: Sendable {
     }
 
     /// Adds a task from one line, read by the Mac exactly as its own capture box reads it.
-    public func capture(_ line: String) async throws -> Captured {
-        try decode(await send("POST", "/capture", body: ["text": line]).data)
+    /// `typedAt` is when the line was typed, if that was earlier: "tomorrow" is then read from that moment.
+    public func capture(_ line: String, typedAt: Date? = nil, key: UUID? = nil) async throws -> Captured {
+        var body = ["text": line]
+        if let typedAt { body["at"] = HubJSON.string(from: typedAt) }
+        return try decode(await send("POST", "/capture", body: body, headers: Self.keyed(key)).data)
+    }
+
+    /// Creates a task with these fields: how a task deleted on the Mac is brought back.
+    public func create(like task: TodoTask, key: UUID? = nil) async throws -> TodoTask {
+        struct Body: Encodable, Sendable {
+            var title: String
+            var notes: String
+            var status: TaskStatus
+            var priority: TaskPriority
+            var assignee: TaskAssignee
+            var tags: [String]
+            var due: Day?
+            var project: String?
+            var `repeat`: TaskRepeat?
+            var remindAt: Date?
+            var subtasks: [String]
+        }
+        let body = Body(title: task.title, notes: task.notes, status: task.status, priority: task.priority, assignee: task.assignee, tags: task.tags,
+                        due: task.due, project: task.project, repeat: task.repeats, remindAt: task.remindAt, subtasks: task.subtasks.map(\.title))
+        return try await taskResult("POST", "/tasks", body: body, headers: Self.keyed(key)).task
     }
 
     /// How the Mac would read a line, without adding anything.

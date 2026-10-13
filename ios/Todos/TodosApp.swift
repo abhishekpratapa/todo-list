@@ -25,7 +25,10 @@ extension AppModel {
         let environment = ProcessInfo.processInfo.environment
         if let port = environment["TODOS_TEST_PORT"].flatMap(Int.init), let token = environment["TODOS_TEST_TOKEN"],
            let credentials = HubCredentials.loopbackForTesting(port: port, token: token) {
-            return AppModel(store: InMemoryCredentialStore(credentials))
+            // A folder of its own, emptied each launch, so a test run never sees the real list.
+            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("TodosTestHub", isDirectory: true)
+            try? FileManager.default.removeItem(at: scratch)
+            return AppModel(credentials: InMemoryCredentialStore(credentials), dataDirectory: scratch)
         }
         #endif
         return AppModel()

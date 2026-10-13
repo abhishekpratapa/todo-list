@@ -26,6 +26,27 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    Button {
+                        dismiss()
+                        model.isShowingSync = true
+                    } label: {
+                        LabeledContent("Waiting to be sent", value: "\(model.waiting.count)")
+                    }
+                    if !model.needingAttention.isEmpty {
+                        Button {
+                            dismiss()
+                            model.isShowingSync = true
+                        } label: {
+                            LabeledContent("Need your decision", value: "\(model.needingAttention.count)")
+                        }
+                    }
+                } header: {
+                    Text("Changes made on this iPhone")
+                } footer: {
+                    Text("The list is kept on this iPhone, so you can read and change it without a connection. Changes are sent, in order, when your Mac can be reached.")
+                }
+
                 if let issue = model.issue {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
@@ -52,9 +73,15 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Button(model.issue?.needsPairing == true ? "Pair Again" : "Unpair This iPhone", role: .destructive) { confirmingUnpair = true }
+                    if model.issue?.needsPairing == true {
+                        Button("Pair Again") {
+                            dismiss()
+                            Task { await model.unpair(erasingData: false) }
+                        }
+                    }
+                    Button("Unpair This iPhone", role: .destructive) { confirmingUnpair = true }
                 } footer: {
-                    Text("Unpairing removes the access token from this iPhone. To sign every device out at once, choose Rotate Access Token on your Mac.")
+                    Text("Unpairing removes the access token and the copy of your list from this iPhone. To sign every device out at once, choose Rotate Access Token on your Mac.")
                 }
 
                 Section {
@@ -71,15 +98,20 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
             .confirmationDialog("Unpair this iPhone?", isPresented: $confirmingUnpair, titleVisibility: .visible) {
-                Button("Unpair", role: .destructive) {
+                Button(unsent == 0 ? "Unpair" : "Unpair and Lose \(unsent == 1 ? "1 Change" : "\(unsent) Changes")", role: .destructive) {
                     dismiss()
-                    model.unpair()
+                    Task { await model.unpair(erasingData: true) }
                 }
             } message: {
-                Text("You’ll need the address and token, or the pairing code, to connect again. Nothing changes on your Mac.")
+                Text(unsent == 0
+                    ? "The token and the copy of your list are removed from this iPhone. Nothing changes on your Mac."
+                    : "\(unsent == 1 ? "1 change" : "\(unsent) changes") made on this iPhone \(unsent == 1 ? "hasn’t" : "haven’t") reached your Mac and will be lost.")
             }
         }
     }
+
+    /// Changes that would be lost by unpairing.
+    private var unsent: Int { model.changes.count }
 
     private var status: String {
         if let issue = model.issue { return issue.title }

@@ -34,10 +34,11 @@ public enum Compatibility: Sendable, Equatable {
 
     /// The API version this app speaks.
     public static let apiVersion = 1
-    /// The earliest revision with everything this app relies on (Todos 1.5: /meta, list version).
-    public static let requiredRevision = 2
+    /// The earliest revision with everything this app relies on (Todos 1.6: changes that are
+    /// safe to send twice, and captured lines that say when they were typed).
+    public static let requiredRevision = 3
     /// The Todos release that first had `requiredRevision`, for telling the user what to update to.
-    public static let requiredAppVersion = "1.5"
+    public static let requiredAppVersion = "1.6"
 
     public init(_ meta: ServerMeta) {
         if meta.api.version > Self.apiVersion {

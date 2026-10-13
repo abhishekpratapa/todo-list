@@ -6,6 +6,10 @@ import TodosKit
 struct TaskRow: View {
     @Environment(AppModel.self) private var model
     var task: TodoTask
+    /// This iPhone has changes to it that haven't reached the Mac.
+    var isWaiting = false
+    /// One of those changes can't go further until the user decides.
+    var needsAttention = false
 
     var body: some View {
         let today = Day.today()
@@ -34,6 +38,15 @@ struct TaskRow: View {
                 }
             }
             Spacer(minLength: 0)
+            if needsAttention {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            } else if isWaiting {
+                Image(systemName: "clock")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             if task.priority == .high, task.status.isOpen {
                 Image(systemName: "exclamationmark")
                     .font(.footnote.weight(.bold))
@@ -41,7 +54,7 @@ struct TaskRow: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(TaskSpeech.summary(task, today: today))
+        .accessibilityLabel(TaskSpeech.summary(task, today: today) + (needsAttention ? ", a change needs your decision" : isWaiting ? ", changes waiting to be sent" : ""))
     }
 
     /// The small print under the title, as one piece of text so it wraps at large type sizes.

@@ -35,6 +35,10 @@ struct QuickCaptureView: View {
 
                 if let parsed, !trimmed.isEmpty {
                     CapturePreview(parsed: parsed)
+                } else if model.issue != nil {
+                    Label("Your Mac can’t be reached. It will read this line, dates and all, as soon as it can.", systemImage: "clock")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } else {
                     Text(verbatim: "Try “Renew passport fri !high #personal” or “Call dentist tomorrow 3pm”.")
                         .font(.footnote)
@@ -70,10 +74,8 @@ struct QuickCaptureView: View {
         let text = trimmed
         guard !text.isEmpty, !adding else { return }
         adding = true
-        Task {
-            if await model.capture(text) { dismiss() }
-            adding = false
-        }
+        dismiss() // it is saved on this iPhone at once; sending it doesn't need this sheet
+        Task { await model.capture(text) }
     }
 }
 

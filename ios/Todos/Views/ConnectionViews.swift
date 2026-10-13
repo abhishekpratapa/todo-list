@@ -38,7 +38,7 @@ struct IssueView: View {
             Text("\(issue.explanation)\n\(issue.action)")
         } actions: {
             if issue.needsPairing {
-                Button("Pair Again") { model.unpair() }
+                Button("Pair Again") { Task { await model.unpair(erasingData: false) } }
                     .buttonStyle(.borderedProminent)
             } else {
                 Button {
@@ -57,7 +57,7 @@ struct IssueView: View {
             }
         }
         .confirmationDialog("Forget this Mac?", isPresented: $confirmingUnpair, titleVisibility: .visible) {
-            Button("Unpair", role: .destructive) { model.unpair() }
+            Button("Unpair", role: .destructive) { Task { await model.unpair(erasingData: false) } }
         } message: {
             Text("The access token is removed from this iPhone. Nothing changes on your Mac.")
         }

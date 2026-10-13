@@ -12,7 +12,7 @@
 // "Reply to @sam about PR #42" keeps its title intact. A leading backslash
 // (\friday) keeps any word literal.
 
-import { parseDue, today } from './store.js';
+import { nowMs, parseDue, today } from './store.js';
 
 const PRIORITY_WORDS = { high: 'high', hi: 'high', h: 'high', 1: 'high', medium: 'medium', med: 'medium', m: 'medium', 2: 'medium', low: 'low', lo: 'low', l: 'low', 3: 'low' };
 
@@ -129,9 +129,9 @@ export function parseQuickAdd(text) {
   if (time) {
     const at = new Date((fields.due || today()) + 'T00:00');
     at.setHours(time.hour, time.minute, 0, 0);
-    if (!fields.due && at.getTime() <= Date.now()) at.setDate(at.getDate() + 1);
+    if (!fields.due && at.getTime() <= nowMs()) at.setDate(at.getDate() + 1);
     fields.due ??= `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
-    if (at.getTime() > Date.now()) fields.remindAt = at.toISOString();
+    if (at.getTime() > nowMs()) fields.remindAt = at.toISOString();
   }
 
   const title = items.filter((item) => item.type === 'word').map((item) => item.text).join(' ');

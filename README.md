@@ -96,7 +96,7 @@ If you edit something on a device whose copy is out of date (for example a Claud
 
 ### The iPhone app
 
-There is a native iPhone app in `ios/`. `ios/README.md` covers building and installing it. It needs Todos 1.5 or later on the Mac.
+There is a native iPhone app in `ios/`. `ios/README.md` covers building and installing it. It needs Todos 1.6 or later on the Mac.
 
 To connect it, choose **Remote Access → Pair iPhone…** on the Mac and scan the code with the app. The code holds the address and the access token, so the window shows it for a minute only and is left out of screenshots and screen sharing. You can also type the address and token into the app instead.
 
@@ -126,7 +126,9 @@ curl -sS https://your-mac.your-tailnet.ts.net/api/v1/capture \
 
 `docs/openapi.json` documents every endpoint under `/api/v1`: tasks (list, filter, search, create, edit, complete, delete), subtasks, comments, history, quick capture, what's due, the daily summary, and live updates. Send the access token as `Authorization: Bearer …`.
 
-`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2.
+`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3.
+
+Any change can carry an `Idempotency-Key` header (8 to 64 letters, digits, hyphens or underscores; a UUID works). Sending the same change again with the same key does nothing the second time and answers with the task as it is now, so a script or app can retry after a timeout without adding a task twice. `/capture` also takes an optional `at`, the moment a line was typed, for lines that reach the Mac later: "tomorrow" is then read from that moment.
 
 Edits and deletes must say which revision of the task they are based on (`If-Match: "3"`, from the task's `rev` or the `ETag` header). If the task has changed since, you get `409` with the current task and nothing is overwritten. Adding comments, adding or checking subtasks, and completing a task need no revision.
 

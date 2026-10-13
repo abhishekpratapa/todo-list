@@ -3,7 +3,7 @@
   "info": {
     "title": "Todos API",
     "version": "1",
-    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible in the app on the Mac itself.\n\n**Compatibility.** `GET /meta` reports the API version and revision. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
+    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible in the app on the Mac itself.\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
   },
   "servers": [
     {
@@ -281,7 +281,7 @@
           "Session"
         ],
         "summary": "What does this server speak?",
-        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`.",
+        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`. Revision 3 (Todos 1.6) added the `Idempotency-Key` header on every change, and `at` on `/capture` and `/capture/preview`.",
         "responses": {
           "200": {
             "description": "The API version and revision, and the app that is serving it.",
@@ -742,7 +742,12 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ]
       }
     },
     "/tasks/{id}": {
@@ -838,6 +843,9 @@
             },
             "description": "The rev of the task this change is based on, as returned in the ETag header or task.rev, e.g. \"3\". Use * to overwrite regardless.",
             "example": "\"3\""
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
           }
         ],
         "requestBody": {
@@ -1298,7 +1306,12 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ]
       }
     },
     "/tasks/{id}/subtasks": {
@@ -1423,7 +1436,12 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ]
       }
     },
     "/tasks/{id}/subtasks/{subtaskId}": {
@@ -1554,7 +1572,12 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -1635,7 +1658,12 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ]
       }
     },
     "/tasks/{id}/comments": {
@@ -1758,7 +1786,12 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ]
       }
     },
     "/tasks/{id}/activity": {
@@ -1874,6 +1907,11 @@
                   "text": {
                     "type": "string",
                     "example": "Renew passport fri !high #personal"
+                  },
+                  "at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When the line was typed, if that was earlier (a line queued while offline). Relative dates in the line, like \"tomorrow\" or \"3pm\", are read from then instead of from now. Added in revision 3."
                   }
                 }
               }
@@ -1988,7 +2026,12 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ]
       }
     },
     "/capture/preview": {
@@ -2007,6 +2050,11 @@
                 "properties": {
                   "text": {
                     "type": "string"
+                  },
+                  "at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When the line was typed, if that was earlier (a line queued while offline). Relative dates in the line, like \"tomorrow\" or \"3pm\", are read from then instead of from now. Added in revision 3."
                   }
                 }
               }
@@ -2577,6 +2625,18 @@
               }
             }
           }
+        }
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Makes the request safe to send again, for a retry after the answer was lost or a change queued while offline. 8 to 64 letters, digits, hyphens or underscores, unique to this change (a UUID works). A second request with the same key changes nothing and answers with the task as it is now; an edit repeated this way is not a conflict even though the first attempt moved the revision on. Added in revision 3.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[\\w-]{8,64}$"
         }
       }
     }

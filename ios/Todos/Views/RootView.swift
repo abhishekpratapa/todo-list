@@ -61,22 +61,7 @@ struct MainView: View {
         .animation(.snappy, value: model.notice)
         .sheet(isPresented: $capturing) { QuickCaptureView() }
         .sheet(isPresented: $showingSettings) { SettingsView() }
-        .alert(
-            "Changed on your Mac",
-            isPresented: Binding(get: { model.conflict != nil }, set: { if !$0 { model.conflict = nil } }),
-            presenting: model.conflict
-        ) { conflict in
-            switch conflict.mine {
-            case .edit:
-                Button("Apply My Change") { Task { await model.resolve(conflict, applyMine: true) } }
-                Button("Keep the Mac’s Version", role: .cancel) { Task { await model.resolve(conflict, applyMine: false) } }
-            case .delete:
-                Button("Delete Anyway", role: .destructive) { Task { await model.resolve(conflict, applyMine: true) } }
-                Button("Keep It", role: .cancel) { Task { await model.resolve(conflict, applyMine: false) } }
-            }
-        } message: { conflict in
-            Text(ConflictText.message(for: conflict))
-        }
+        .sheet(isPresented: $model.isShowingSync) { SyncView() }
     }
 }
 
@@ -111,20 +96,5 @@ struct NoticeView: View {
             .padding(.horizontal, 20)
             .accessibilityAddTraits(.isStaticText)
             .onAppear { AccessibilityNotification.Announcement(notice.text).post() }
-    }
-}
-
-enum ConflictText {
-    /// What the alert says when the Mac refused a change because the task changed there first.
-    static func message(for conflict: AppModel.Conflict) -> String {
-        let who = conflict.current.activity?.last.map { $0.by == "me" ? "You" : $0.author } ?? "Someone"
-        let title = "“\(conflict.current.title)”"
-        switch conflict.mine {
-        case .edit(let patch):
-            let fields = patch.fields.map { $0.label.lowercased() }.formatted(.list(type: .and))
-            return "\(who) changed \(title) while you were editing it, so your change to the \(fields) wasn’t applied. The task now shows the Mac’s version."
-        case .delete:
-            return "\(who) changed \(title) after you last saw it, so it wasn’t deleted."
-        }
     }
 }

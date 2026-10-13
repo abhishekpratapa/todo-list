@@ -1,8 +1,11 @@
 // The app's state: whether this iPhone is paired, the task list, the connection to
 // the Mac, and every change the screens can make.
 //
-// In this phase the app works only while the Mac is reachable. A change is shown
-// straight away, sent, and put back if the Mac doesn't accept it.
+// The list on screen is what the Mac last sent (kept on disk, so the app opens at
+// once and can be read offline) with this iPhone's own changes on top. Every
+// change is saved first and sent second: if the Mac can't be reached it waits, and
+// if the task changed on the Mac meanwhile the two are merged or set aside for
+// the user to decide. TodosKit's LocalStore and SyncEngine do that work.
 
 import Foundation
 import Observation
@@ -23,63 +26,70 @@ final class AppModel {
         var isError = false
     }
 
-    /// A change of mine that the Mac refused because the task had changed there first.
-    struct Conflict: Identifiable {
-        enum Mine {
-            case edit(TaskPatch)
-            case delete
-        }
-
-        let id = UUID()
-        var mine: Mine
-        /// The task as it is on the Mac now.
-        var current: TodoTask
-    }
-
     private(set) var phase = Phase.launching
     private(set) var address: HubAddress?
     /// The version of Todos running on the Mac, once it has said.
     private(set) var macVersion: String?
 
+    /// The list as shown: what the Mac last sent, with this iPhone's waiting changes on top.
     private(set) var tasks: [TodoTask] = []
-    /// False until the list has arrived from the Mac at least once.
+    /// Changes made here that the Mac hasn't accepted yet, in the order they were made.
+    private(set) var changes: [PendingChange] = []
+    /// False until there is a list to show: fetched just now, or kept from last time.
     private(set) var hasLoaded = false
+    /// When the list last came from the Mac.
     private(set) var lastSynced: Date?
     /// True while the live-update connection is open.
     private(set) var isLive = false
+    /// True while waiting changes are being sent.
+    private(set) var isSending = false
     /// Why the Mac can't be reached right now, if it can't.
     private(set) var issue: ConnectionIssue?
 
     var query = TaskQuery()
     var notice: Notice?
-    var conflict: Conflict?
+    /// Set by any screen to show the Sync screen: what is waiting, and what needs a decision.
+    var isShowingSync = false
 
-    /// Tasks fetched one at a time, which come with their history. Lists come without.
-    private var details: [Int: TodoTask] = [:]
-
-    @ObservationIgnored private let store: any CredentialStore
+    @ObservationIgnored private let credentials: any CredentialStore
     @ObservationIgnored private let makeClient: (HubCredentials) -> HubClient
     @ObservationIgnored private let liveStates: (HubClient) -> AsyncStream<LiveState>
+    @ObservationIgnored private let dataDirectory: URL
     @ObservationIgnored private var client: HubClient?
+    @ObservationIgnored private var store: LocalStore?
+    @ObservationIgnored private var engine: SyncEngine?
+    @ObservationIgnored private var list = CachedList()
     @ObservationIgnored private var live: Task<Void, Never>?
-    @ObservationIgnored private var changes: Task<Void, Never>?
-    @ObservationIgnored private var listVersion: Int?
+    @ObservationIgnored private var sending: Task<Void, Never>?
+    @ObservationIgnored private var sendAgain = false
     @ObservationIgnored private var compatibilityChecked = false
     @ObservationIgnored private var isRefreshing = false
     @ObservationIgnored private var refreshQueued = false
-    @ObservationIgnored private var openDetails: [Int: Int] = [:]
     // Logs say what happened, never what a task says or what the token is.
     @ObservationIgnored private let log = Logger(subsystem: "com.abhishekpratapa.todos.ios", category: "sync")
 
-    /// The defaults are the real thing: the Keychain, the network, and the Mac's event stream. Tests replace them.
+    /// The defaults are the real thing: the Keychain, the network, the Mac's event stream
+    /// and the shared container. Tests replace them.
     init(
-        store: any CredentialStore = KeychainCredentialStore(),
+        credentials: any CredentialStore = KeychainCredentialStore(),
         makeClient: @escaping (HubCredentials) -> HubClient = { HubClient(credentials: $0) },
-        liveStates: @escaping (HubClient) -> AsyncStream<LiveState> = { LiveUpdates(client: $0).states() }
+        liveStates: @escaping (HubClient) -> AsyncStream<LiveState> = { LiveUpdates(client: $0).states() },
+        dataDirectory: URL = AppModel.sharedDataDirectory
     ) {
-        self.store = store
+        self.credentials = credentials
         self.makeClient = makeClient
         self.liveStates = liveStates
+        self.dataDirectory = dataDirectory
+    }
+
+    /// Where the list and waiting changes are kept: the app group's container, which
+    /// the widget and extensions can read too. (Outside a signed app there is no
+    /// such container, so the app's own folder is used.)
+    static let appGroup = "group.com.abhishekpratapa.todos"
+    static var sharedDataDirectory: URL {
+        let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("Todos", isDirectory: true)
     }
 
     // MARK: Pairing
@@ -88,7 +98,7 @@ final class AppModel {
         guard phase == .launching else { return }
         let saved: HubCredentials?
         do {
-            saved = try store.load()
+            saved = try credentials.load()
         } catch {
             log.error("could not read the Keychain")
             saved = nil
@@ -97,18 +107,18 @@ final class AppModel {
             phase = .unpaired
             return
         }
-        adopt(saved, makeClient(saved))
+        await adopt(saved, makeClient(saved))
         await activate()
     }
 
     /// Tries an address and token against the Mac, and keeps them only if they work.
     /// Returns what went wrong, or nil.
-    func pair(_ credentials: HubCredentials) async -> ConnectionIssue? {
-        let candidate = makeClient(credentials)
+    func pair(_ new: HubCredentials) async -> ConnectionIssue? {
+        let candidate = makeClient(new)
         do {
             let check = try await candidate.checkCompatibility()
             guard check.result == .compatible else { return ConnectionIssue(check.result) }
-            try store.save(credentials)
+            try credentials.save(new)
             macVersion = check.meta?.app?.version
         } catch let error as HubError {
             log.error("pairing failed: \(error.logName, privacy: .public)")
@@ -117,36 +127,49 @@ final class AppModel {
             log.error("pairing failed: could not save to the Keychain")
             return .other("The token couldn’t be saved on this iPhone.")
         }
-        adopt(credentials, candidate)
+        await adopt(new, candidate)
         compatibilityChecked = true
         await activate()
         return nil
     }
 
-    private func adopt(_ credentials: HubCredentials, _ client: HubClient) {
+    /// Each Mac has a folder of its own, named after its address. Pairing again with
+    /// the same Mac (after its token was rotated, say) finds the list and any waiting
+    /// changes still there; pairing with a different Mac never sees them.
+    private func adopt(_ new: HubCredentials, _ client: HubClient) async {
+        let folder = String(new.address.description.map { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" ? $0 : "_" })
+        let store = LocalStore(directory: dataDirectory.appendingPathComponent("Hubs", isDirectory: true).appendingPathComponent(folder, isDirectory: true))
         self.client = client
-        address = credentials.address
+        self.store = store
+        engine = SyncEngine(client: client, store: store)
+        address = new.address
+        issue = nil
+        await reload()
         phase = .paired
     }
 
-    /// Forgets the Mac: removes the token from the Keychain and everything shown.
-    func unpair() {
+    /// Forgets the Mac's token. With `erasingData`, also removes the list kept here and any
+    /// changes still waiting; without it they stay for when this Mac is paired again.
+    func unpair(erasingData: Bool) async {
         stopLive()
+        sending?.cancel()
         do {
-            try store.clear()
+            try credentials.clear()
         } catch {
             log.error("could not clear the Keychain")
         }
+        if erasingData { await store?.erase() }
         client = nil
+        store = nil
+        engine = nil
         address = nil
         macVersion = nil
+        list = CachedList()
+        changes = []
         tasks = []
-        details = [:]
         hasLoaded = false
         lastSynced = nil
-        listVersion = nil
         issue = nil
-        conflict = nil
         query = TaskQuery()
         compatibilityChecked = false
         phase = .unpaired
@@ -154,7 +177,7 @@ final class AppModel {
 
     // MARK: Connection
 
-    /// The app came to the front: connect for live updates and load the list.
+    /// The app came to the front: connect for live updates, send what is waiting, load the list.
     func activate() async {
         guard phase == .paired else { return }
         startLive()
@@ -167,8 +190,8 @@ final class AppModel {
         compatibilityChecked = false
     }
 
-    /// Checks the Mac speaks a version this app understands (once each time the app
-    /// comes to the front), then loads the list.
+    /// Checks the Mac speaks a version this app understands (once each time the app comes
+    /// to the front), sends waiting changes, then loads the list.
     func sync() async {
         guard let client else { return }
         if !compatibilityChecked {
@@ -186,12 +209,13 @@ final class AppModel {
                 return
             }
         }
+        await send()
         await refresh()
     }
 
     /// Fetches the whole list. If a refresh is already running, one more runs after it.
     func refresh() async {
-        guard let client else { return }
+        guard let engine else { return }
         if isRefreshing {
             refreshQueued = true
             return
@@ -201,16 +225,13 @@ final class AppModel {
         repeat {
             refreshQueued = false
             do {
-                let snapshot = try await client.allTasks()
-                guard self.client?.address == client.address else { return } // unpaired meanwhile
-                tasks = snapshot.tasks
-                listVersion = snapshot.version
-                lastSynced = Date()
-                hasLoaded = true
+                let fetched = try await engine.refresh()
+                guard self.engine?.client.address == engine.client.address else { return } // unpaired meanwhile
                 if issue?.mayClearByItself == true { issue = nil }
-                log.info("list loaded: \(snapshot.tasks.count, privacy: .public) tasks")
-                await refreshDetails()
+                log.info("list loaded: \(fetched.tasks.count, privacy: .public) tasks")
+                await reload()
             } catch {
+                await reload()
                 report(error)
                 return
             }
@@ -248,9 +269,9 @@ final class AppModel {
         case .live(let version):
             isLive = true
             if issue?.mayClearByItself == true { issue = nil }
-            if !compatibilityChecked || !hasLoaded || version != listVersion { await sync() }
+            if !compatibilityChecked || !hasLoaded || version != list.version || changes.contains(where: \.isWaiting) { await sync() }
         case .changed(let version):
-            if version != listVersion { await refresh() }
+            if version != list.version { await refresh() }
         case .waiting(let error, _):
             isLive = false
             log.info("live updates waiting: \(error.logName, privacy: .public)")
@@ -262,20 +283,15 @@ final class AppModel {
         }
     }
 
-    /// Turns a failure into what the user sees: a banner for connection problems, a notice for the rest.
+    /// Turns a failure to reach the Mac into what the user sees.
     private func report(_ error: Error) {
         guard let error = error as? HubError else { return } // cancellation
         log.error("request failed: \(error.logName, privacy: .public)")
         switch error {
-        case .notFound:
-            notice = Notice(text: "That task is no longer on your Mac.", isError: true)
-        case .invalid(_, let message):
-            notice = Notice(text: message, isError: true)
-        case .conflict, .preconditionRequired:
-            break // handled where the change was made
-        case .rateLimited(let retryAfter) where hasLoaded:
-            let wait = retryAfter.map { " Try again in \(Int($0.rounded(.up))) seconds." } ?? " Try again shortly."
-            notice = Notice(text: "Your Mac is getting changes too quickly." + wait, isError: true)
+        case .transport(.cancelled), .conflict, .preconditionRequired, .notFound, .invalid:
+            break // not about the connection
+        case .rateLimited where hasLoaded:
+            break // the queue waits and carries on by itself
         default:
             issue = ConnectionIssue(error, tailscaleConnected: Tailscale.isConnected())
             if error == .unauthorized { stopLive() }
@@ -296,206 +312,217 @@ final class AppModel {
         tasks.projects
     }
 
-    /// A task, with its history if that has been fetched.
+    /// A task as shown, with its history if that has been fetched.
     func task(_ id: Int) -> TodoTask? {
-        details[id] ?? tasks.first { $0.id == id }
+        tasks.first { $0.id == id }
     }
 
-    /// A detail screen opened: fetch the task's history and keep it current while open.
+    /// Changes not sent yet, or that the Mac couldn't be reached for.
+    var waiting: [PendingChange] {
+        changes.filter(\.isWaiting)
+    }
+
+    /// Changes that can't go any further until the user decides something.
+    var needingAttention: [PendingChange] {
+        changes.filter(\.needsAttention)
+    }
+
+    /// New tasks on their way to the Mac: captured lines, and tasks being put back.
+    var waitingAdditions: [PendingChange] {
+        waiting.filter { $0.taskID == nil }
+    }
+
+    func hasWaitingChanges(_ task: Int) -> Bool {
+        changes.contains { $0.taskID == task && $0.isWaiting }
+    }
+
+    func needsAttention(_ task: Int) -> Bool {
+        changes.contains { $0.taskID == task && $0.needsAttention }
+    }
+
+    /// The title of the task a change is for, as this iPhone knows it.
+    func title(for change: PendingChange) -> String? {
+        if case .taskDeleted(let last?) = change.state { return last.title }
+        if case .conflict(let theirs) = change.state { return theirs.title }
+        return change.taskID.flatMap { id in list.tasks.first { $0.id == id }?.title }
+    }
+
+    /// A detail screen opened: fetch the task's history if the Mac can be reached.
     func open(_ id: Int) async {
-        openDetails[id, default: 0] += 1
-        await loadDetail(id)
+        guard let engine, issue == nil else { return }
+        _ = try? await engine.fetch(id)
+        await reload()
     }
 
-    func close(_ id: Int) {
-        openDetails[id] = (openDetails[id] ?? 1) - 1
-        if openDetails[id] == 0 { openDetails[id] = nil }
-    }
-
-    private func loadDetail(_ id: Int) async {
-        guard let client else { return }
-        do {
-            keep(try await client.task(id))
-        } catch HubError.notFound {
-            forget(id)
-        } catch {
-            report(error)
-        }
-    }
-
-    /// After the list reloads: drop histories that are now out of date, and refetch the ones on screen.
-    private func refreshDetails() async {
-        let revisions = Dictionary(tasks.map { ($0.id, $0.rev) }, uniquingKeysWith: { first, _ in first })
-        let stale = details.filter { revisions[$0.key] != $0.value.rev }.map(\.key)
-        for id in stale where openDetails[id] == nil { details[id] = nil }
-        for id in stale where openDetails[id] != nil {
-            if revisions[id] == nil { details[id] = nil } else { await loadDetail(id) }
-        }
-    }
-
-    // MARK: Local copies
-
-    private func keep(_ task: TodoTask) {
-        details[task.id] = task
-        if let index = tasks.firstIndex(where: { $0.id == task.id }) {
-            tasks[index] = task
-        } else {
-            tasks.append(task)
-        }
-        tasks = tasks.inListOrder()
-    }
-
-    private func forget(_ id: Int) {
-        details[id] = nil
-        tasks.removeAll { $0.id == id }
-    }
-
-    private func change(_ id: Int, _ edit: (inout TodoTask) -> Void) {
-        if var detail = details[id] {
-            edit(&detail)
-            details[id] = detail
-        }
-        if let index = tasks.firstIndex(where: { $0.id == id }) {
-            edit(&tasks[index])
-            tasks = tasks.inListOrder()
-        }
+    /// Reads the list and waiting changes back from the store and works out what to show.
+    private func reload() async {
+        guard let store else { return }
+        list = await store.list
+        changes = await store.changes
+        tasks = list.tasks.applying(changes).inListOrder()
+        lastSynced = list.syncedAt
+        hasLoaded = list.syncedAt != nil
     }
 
     // MARK: Changes
 
-    /// Changes run one at a time, in the order they were made, so each one is based
-    /// on the revision the one before it produced.
-    private func inOrder<T: Sendable>(_ work: @escaping @MainActor () async -> T) async -> T {
-        let previous = changes
-        let next = Task { @MainActor in
-            await previous?.value
-            return await work()
-        }
-        changes = Task { _ = await next.value }
-        return await next.value
-    }
-
-    /// Shows a change straight away, sends it, and puts things back if the Mac doesn't accept it.
-    /// `request` returns the task as the Mac now has it, or nil if it was deleted.
+    /// Saves a change, shows it, and sends it if the Mac can be reached.
     @discardableResult
-    private func send(
-        _ id: Int,
-        showing edit: ((inout TodoTask) -> Void)? = nil,
-        ifChangedOnMac: Conflict.Mine? = nil,
-        _ request: @escaping @MainActor (HubClient, TodoTask) async throws -> TodoTask?
-    ) async -> Bool {
-        await inOrder { [self] in
-            guard let client, let base = task(id) else { return false }
-            let before = (list: tasks.first { $0.id == id }, detail: details[id])
-            if let edit { change(id, edit) }
-            do {
-                if let updated = try await request(client, base) { keep(updated) } else { forget(id) }
-                return true
-            } catch HubError.conflict(let current) {
-                keep(current)
-                if let mine = ifChangedOnMac { conflict = Conflict(mine: mine, current: current) }
-                return false
-            } catch {
-                // Put back what was showing, unless something newer has arrived in the meantime.
-                if task(id)?.rev == base.rev {
-                    if let list = before.list, let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = list }
-                    details[id] = before.detail
-                    tasks = tasks.inListOrder()
-                }
+    private func make(_ kind: PendingChange.Kind) async -> PendingChange? {
+        guard let store else { return nil }
+        let change = await store.add(kind)
+        await reload()
+        await send()
+        return change
+    }
+
+    /// Sends waiting changes in order. If a send is already running, one more runs after it,
+    /// and this call waits for that too.
+    func send() async {
+        if let sending {
+            sendAgain = true
+            await sending.value
+            return
+        }
+        let run = Task { await self.runSend() }
+        sending = run
+        await run.value
+        sending = nil
+    }
+
+    private func runSend() async {
+        guard let engine else { return }
+        repeat {
+            sendAgain = false
+            guard await engine.store.changes.contains(where: \.isWaiting) else { break }
+            isSending = true
+            let before = Set(changes.filter(\.needsAttention).map(\.id))
+            let outcome = await engine.replay()
+            isSending = false
+            await reload()
+            if case .interrupted(let error) = outcome {
                 report(error)
-                if issue != nil, case HubError.transport = error {
-                    notice = Notice(text: "Not saved: your Mac can’t be reached.", isError: true)
-                }
-                return false
+                break
             }
+            if issue?.mayClearByItself == true { issue = nil }
+            let setAside = changes.filter { $0.needsAttention && !before.contains($0.id) }
+            if let first = setAside.first {
+                notice = Notice(text: setAside.count == 1 ? Self.attentionText(first) : "\(setAside.count) changes need your decision.", isError: true)
+            }
+        } while sendAgain
+    }
+
+    private static func attentionText(_ change: PendingChange) -> String {
+        switch change.state {
+        case .conflict: "This task changed on your Mac too. Choose which version to keep."
+        case .taskDeleted: "This task was deleted on your Mac. Your change is kept."
+        case .rejected(let message): message
+        case .waiting: ""
         }
     }
 
-    /// Edits a task's fields.
+    /// Edits a task's fields. An edit made while an earlier one to the same task is still
+    /// waiting joins it, so going offline and changing five things sends one change.
     func update(_ id: Int, _ patch: TaskPatch) async {
-        guard !patch.isEmpty else { return }
-        await send(id, showing: { $0 = patch.applied(to: $0) }, ifChangedOnMac: .edit(patch)) { client, base in
-            let result = try await client.update(id, rev: base.rev, patch)
-            if let next = result.next { self.keep(next) }
-            return result.task
+        guard !patch.isEmpty, let store, let shown = task(id), let cached = list.tasks.first(where: { $0.id == id }) else { return }
+        let before = TaskPatch(of: shown, fields: patch.fields)
+        if sending == nil, let last = changes.last(where: { $0.taskID == id }), last.isWaiting, case .update(_, let baseRev, let base, let earlier) = last.kind {
+            let joined = PendingChange.Kind.update(task: id, baseRev: baseRev, base: before.merging(base), patch: earlier.merging(patch))
+            await store.put(PendingChange(id: last.id, createdAt: last.createdAt, kind: joined))
+            await reload()
+            await send()
+        } else {
+            await make(.update(task: id, baseRev: cached.rev, base: before, patch: patch))
         }
     }
 
     func complete(_ id: Int) async {
-        await send(id, showing: { $0.status = .done }) { client, _ in
-            let result = try await client.complete(id)
-            if let next = result.next {
-                self.keep(next)
-                self.announce("Done. The next one is due \(next.due?.label(relativeTo: .today()).lowercased() ?? "later").")
-            }
-            return result.task
+        guard let task = task(id) else { return }
+        await make(.complete(task: id))
+        if task.repeats != nil, issue == nil, let next = tasks.first(where: { $0.title == task.title && $0.status == .todo && $0.repeats == task.repeats && $0.id > id }) {
+            notice = Notice(text: "Done. The next one is due \(next.due?.label(relativeTo: .today()).lowercased() ?? "later").")
         }
     }
 
     func delete(_ id: Int) async {
-        await send(id, ifChangedOnMac: .delete) { client, base in
-            try await client.delete(id, rev: base.rev)
-            return nil
-        }
+        guard let cached = list.tasks.first(where: { $0.id == id }) else { return }
+        await make(.delete(task: id, baseRev: cached.rev))
     }
 
-    func addComment(_ id: Int, _ text: String) async -> Bool {
-        await send(id) { client, _ in try await client.addComment(id, text: text) }
+    func addComment(_ id: Int, _ text: String) async {
+        await make(.comment(task: id, text: text))
     }
 
-    func addSubtask(_ id: Int, _ title: String) async -> Bool {
-        await send(id) { client, _ in try await client.addSubtask(id, title: title) }
+    func addSubtask(_ id: Int, _ title: String) async {
+        // A stand-in id, below any id this task's subtasks have, until the Mac assigns the real one.
+        let localID = min(task(id)?.subtasks.map(\.id).min() ?? 0, 0) - 1
+        await make(.addSubtask(task: id, title: title, localID: localID))
     }
 
     func setSubtask(_ id: Int, _ subtask: Int, done: Bool) async {
-        await send(id, showing: { task in
-            if let index = task.subtasks.firstIndex(where: { $0.id == subtask }) { task.subtasks[index].done = done }
-        }) { client, _ in try await client.setSubtask(id, subtask: subtask, done: done) }
+        await make(.setSubtask(task: id, subtask: subtask, done: done))
     }
 
     func renameSubtask(_ id: Int, _ subtask: Int, _ title: String) async {
-        await send(id) { client, _ in try await client.renameSubtask(id, subtask: subtask, title: title) }
+        await make(.renameSubtask(task: id, subtask: subtask, title: title))
     }
 
     func removeSubtask(_ id: Int, _ subtask: Int) async {
-        await send(id, showing: { $0.subtasks.removeAll { $0.id == subtask } }) { client, _ in try await client.removeSubtask(id, subtask: subtask) }
-    }
-
-    /// Applies or drops a change the Mac refused because the task had changed there.
-    func resolve(_ conflict: Conflict, applyMine: Bool) async {
-        self.conflict = nil
-        guard applyMine else { return }
-        switch conflict.mine {
-        case .edit(let patch): await update(conflict.current.id, patch)
-        case .delete: await delete(conflict.current.id)
-        }
+        await make(.removeSubtask(task: id, subtask: subtask))
     }
 
     // MARK: Quick capture
 
-    /// Adds a task from one line, read by the Mac. Returns whether it was added.
-    func capture(_ line: String) async -> Bool {
-        guard let client else { return false }
-        do {
-            let captured = try await client.capture(line)
-            keep(captured.task)
-            announce("Added “\(captured.task.title)”")
-            return true
-        } catch {
-            report(error)
-            if issue != nil, case HubError.transport = error {
-                notice = Notice(text: "Not added: your Mac can’t be reached.", isError: true)
-            }
-            return false
+    /// Adds a task from one line. The Mac reads the line, so offline it is kept as typed
+    /// and shown as waiting until the Mac is reachable.
+    func capture(_ line: String) async {
+        guard let change = await make(.capture(line: line)) else { return }
+        if let still = changes.first(where: { $0.id == change.id }) {
+            if still.isWaiting { notice = Notice(text: "Saved. It will be added when your Mac can be reached.") }
+        } else {
+            notice = Notice(text: "Added")
         }
     }
 
     /// How the Mac would read a line, for showing while typing. Nil if it can't be asked.
     func preview(_ line: String) async -> ParsedCapture? {
-        try? await client?.preview(line)
+        guard issue == nil else { return nil }
+        return try? await client?.preview(line)
     }
 
-    private func announce(_ text: String) {
-        notice = Notice(text: text)
+    // MARK: Changes that were set aside
+
+    /// A conflicted edit, decided: `mine` holds the fields to send after all, on top of the Mac's version.
+    func resolveEdit(_ change: PendingChange, keeping mine: TaskPatch) async {
+        await store?.resolveEdit(change.id, keeping: mine)
+        await reload()
+        await send()
+    }
+
+    func resolveDelete(_ change: PendingChange, deleteAnyway: Bool) async {
+        await store?.resolveDelete(change.id, deleteAnyway: deleteAnyway)
+        await reload()
+        await send()
+    }
+
+    /// Puts back a task that was deleted on the Mac, with the changes that were waiting for it.
+    func restoreTask(for change: PendingChange) async {
+        await store?.restoreTask(for: change.id)
+        await reload()
+        await send()
+    }
+
+    /// Gives a change up. Only ever called because the user chose to.
+    func discard(_ change: PendingChange) async {
+        await store?.discard(change.id)
+        await reload()
+        await send() // changes that were waiting behind it can go now
+    }
+
+    /// Sends a refused change again.
+    func tryAgain(_ change: PendingChange) async {
+        await store?.retry(change.id)
+        await reload()
+        await send()
     }
 }

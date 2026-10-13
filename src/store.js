@@ -106,6 +106,14 @@ function acquireLock() {
   }
 }
 
+// What a mutation returns when it turned out there was nothing to do: the value
+// is handed back and the file is left alone, so no change is announced.
+class Unchanged {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
 // Run fn(db) under the lock and persist the result. If fn throws, nothing is written.
 export function mutate(fn) {
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
@@ -113,6 +121,7 @@ export function mutate(fn) {
   try {
     const db = load();
     const result = fn(db);
+    if (result instanceof Unchanged) return result.value;
     db.version += 1;
     db.updatedAt = now();
     const tmp = `${DATA_FILE}.${process.pid}.tmp`;
@@ -142,11 +151,30 @@ export function watchStore(onChange) {
 
 // ---------- dates ----------
 
+// "Now", for everything that reads a date relative to today. It is the real time
+// unless withClock() has pinned it, which the API does while reading a line that
+// was captured earlier: "tomorrow" then means the day after it was typed, not the
+// day after it reached this Mac.
+let pinnedNow = null;
+export const nowMs = () => pinnedNow ?? Date.now();
+const nowDate = () => new Date(nowMs());
+
+// Runs fn() with "now" pinned to `at` (a Date or milliseconds). fn must not be async.
+export function withClock(at, fn) {
+  const before = pinnedNow;
+  pinnedNow = at instanceof Date ? at.getTime() : at;
+  try {
+    return fn();
+  } finally {
+    pinnedNow = before;
+  }
+}
+
 export function ymd(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export const today = () => ymd(new Date());
+export const today = () => ymd(nowDate());
 
 // "2026-10-05 09:58" in local time.
 export function localStamp(iso) {
@@ -171,13 +199,13 @@ function parseMonthDay(v) {
     const d = new Date(y, month, Number(day));
     return d.getMonth() === month && d.getDate() === Number(day) ? d : null;
   };
-  let d = make(year ? Number(year) : new Date().getFullYear());
+  let d = make(year ? Number(year) : nowDate().getFullYear());
   if (d && !year && ymd(d) < today()) d = make(d.getFullYear() + 1);
   return d ? ymd(d) : null;
 }
 
 function addDays(n) {
-  const d = new Date();
+  const d = nowDate();
   d.setDate(d.getDate() + n);
   return ymd(d);
 }
@@ -198,7 +226,7 @@ export function parseDue(value) {
   if (m) {
     const idx = WEEKDAYS.findIndex((w) => m[1].length >= 3 && w.startsWith(m[1]));
     if (idx >= 0) {
-      const diff = (idx - new Date().getDay() + 7) % 7 || 7;
+      const diff = (idx - nowDate().getDay() + 7) % 7 || 7;
       return addDays(diff);
     }
   }
@@ -260,7 +288,7 @@ export function parseRemind(value) {
   let m = v.match(/^(?:\+|in\s+)(\d+)\s*(m|min|mins|minutes?|h|hrs?|hours?|d|days?)$/);
   if (m) {
     const ms = { m: 60e3, h: 3600e3, d: 864e5 }[m[2][0]];
-    return new Date(Date.now() + Number(m[1]) * ms).toISOString();
+    return new Date(nowMs() + Number(m[1]) * ms).toISOString();
   }
   if (/^\d{4}-\d{2}-\d{2}t[\d:.]+(z|[+-]\d{2}:?\d{2})$/.test(v)) {
     const d = new Date(raw);
@@ -360,10 +388,16 @@ function checkRev(todo, ifRev) {
 }
 
 // An activity entry. `via` names the device or client when the change did not come
-// from the Mac app itself, e.g. { by: 'me', via: 'iPhone' }.
-function entry(at, by, kind, text, via) {
-  return via ? { at, by, kind, text, via } : { at, by, kind, text };
+// from the Mac app itself, e.g. { by: 'me', via: 'iPhone' }. `key` is the
+// idempotency key of the request that made the change, if it had one.
+function entry(at, by, kind, text, via, key) {
+  return { at, by, kind, text, ...(via ? { via } : {}), ...(key ? { key } : {}) };
 }
+
+// A client that might send the same change twice (a retry after the answer was
+// lost) gives it a key. The key is kept on the activity entries the change wrote,
+// and a second request with the same key changes nothing.
+const alreadyDone = (todo, key) => !!key && todo.activity.some((a) => a.key === key);
 
 // ---------- operations ----------
 
@@ -371,11 +405,15 @@ export function getTodo(id) {
   return findIn(load(), id);
 }
 
-export function createTodo(input, by, { via } = {}) {
+// Options: `via` labels the activity with a device or client name; `key` makes the
+// call safe to repeat (a second call with the same key returns the task already created).
+export function createTodo(input, by, { via, key } = {}) {
   if (!('title' in input)) throw new TodoError('Title is required');
   const fields = cleanFields(input);
   const subtasks = cleanSubtaskTitles(input.subtasks ?? []);
   return mutate((db) => {
+    const repeated = key && db.todos.find((t) => alreadyDone(t, key));
+    if (repeated) return new Unchanged(repeated);
     const ts = now();
     const todo = {
       id: db.nextId++,
@@ -396,12 +434,12 @@ export function createTodo(input, by, { via } = {}) {
       createdAt: ts,
       updatedAt: ts,
       completedAt: null,
-      activity: [entry(ts, by, 'event', 'created this task', via)],
+      activity: [entry(ts, by, 'event', 'created this task', via, key)],
       ...fields,
     };
     if (todo.status === 'done') todo.completedAt = ts;
     const comment = cleanText(input.comment);
-    if (comment) todo.activity.push(entry(ts, by, 'comment', comment, via));
+    if (comment) todo.activity.push(entry(ts, by, 'comment', comment, via, key));
     db.todos.push(todo);
     return todo;
   });
@@ -492,12 +530,15 @@ function spawnNext(db, todo, ts, by, via) {
 
 // Returns { todo, next }: `next` is the new occurrence when completing a repeating todo, else null.
 // Options: `ifRev` refuses the write (ConflictError) unless the todo is still at that
-// revision; `via` labels the activity entries with a device or client name.
-export function updateTodo(id, patch, by, { ifRev, via } = {}) {
+// revision; `via` labels the activity entries with a device or client name; `key`
+// makes the call safe to repeat (a second call with the same key changes nothing,
+// and is not a conflict even though the first one moved the revision on).
+export function updateTodo(id, patch, by, { ifRev, via, key } = {}) {
   const fields = cleanFields(patch);
   const comment = cleanText(patch.comment);
   return mutate((db) => {
     const todo = findIn(db, id);
+    if (alreadyDone(todo, key)) return new Unchanged({ todo, next: null });
     checkRev(todo, ifRev);
     const ts = now();
     const changes = [];
@@ -515,8 +556,8 @@ export function updateTodo(id, patch, by, { ifRev, via } = {}) {
       next = spawnNext(db, todo, ts, by, via);
       changes.push(`next occurrence is #${next.id}, due ${next.due}`);
     }
-    if (changes.length) todo.activity.push(entry(ts, by, 'event', changes.join(' · '), via));
-    if (comment) todo.activity.push(entry(ts, by, 'comment', comment, via));
+    if (changes.length) todo.activity.push(entry(ts, by, 'event', changes.join(' · '), via, key));
+    if (comment) todo.activity.push(entry(ts, by, 'comment', comment, via, key));
     if (changes.length || comment) {
       todo.updatedAt = ts;
       todo.rev += 1;

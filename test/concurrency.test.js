@@ -134,6 +134,21 @@ test('API, MCP and app writes at the same time lose nothing', async () => {
   assert.deepEqual(leftovers, [], 'no lock or temp files remain');
 });
 
+test('the same keyed change arriving many times at once is still made exactly once', async () => {
+  const headers = (i) => ({ ...s.bearer(), origin: undefined, 'idempotency-key': 'the-same-key-0001', 'x-forwarded-for': `100.64.4.${i}` });
+  const attempts = await Promise.all(Array.from({ length: 10 }, (_, i) =>
+    s.tailnet('POST', '/api/v1/capture', { body: { text: 'Sent by an impatient phone' }, headers: headers(i) })));
+  assert.ok(attempts.every((r) => r.status === 201), 'every attempt gets the task back');
+  assert.equal(new Set(attempts.map((r) => r.body.task.id)).size, 1, 'and it is the same task');
+  assert.equal(store.load().todos.filter((t) => t.title === 'Sent by an impatient phone').length, 1);
+
+  const { id } = attempts[0].body.task;
+  const comments = await Promise.all(Array.from({ length: 10 }, (_, i) =>
+    s.tailnet('POST', `/api/v1/tasks/${id}/comments`, { body: { text: 'Said once' }, headers: { ...headers(i), 'idempotency-key': 'the-same-key-0002' } })));
+  assert.ok(comments.every((r) => r.status === 201));
+  assert.equal(store.getTodo(id).activity.filter((a) => a.kind === 'comment').length, 1);
+});
+
 test('when several clients edit the same revision at once, exactly one wins', async () => {
   const task = store.createTodo({ title: 'Race me', notes: 'start' }, 'me');
   const attempts = await Promise.all(Array.from({ length: 12 }, (_, i) =>

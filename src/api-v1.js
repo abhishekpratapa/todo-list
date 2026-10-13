@@ -19,7 +19,7 @@ import { RequestError, json, readJson, readJsonOrText } from './http.js';
 import { parseQuickAdd } from './quickadd.js';
 import {
   ASSIGNEES, PRIORITIES, ROOT, STATUSES, ConflictError, NotFoundError, TodoError,
-  createTodo, dailySummary, deleteTodo, dueGroups, getTodo, load, sortTodos, summarize, today, updateTodo, ymd,
+  createTodo, dailySummary, deleteTodo, dueGroups, getTodo, load, sortTodos, summarize, today, updateTodo, withClock, ymd,
 } from './store.js';
 
 // What GET /meta reports, so a client can check it is compatible before relying on
@@ -27,8 +27,9 @@ import {
 // each addition raises the revision, so a client needs "version 1, revision N or later".
 //   1  Todos 1.4. Has no /meta: a 404 there means revision 1.
 //   2  Todos 1.5. GET /meta; `version` in GET /tasks.
+//   3  Todos 1.6. Idempotency-Key on every change; `at` on /capture and /capture/preview.
 export const API_VERSION = 1;
-export const API_REVISION = 2;
+export const API_REVISION = 3;
 const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 const EDITABLE = ['title', 'notes', 'status', 'priority', 'due', 'project', 'tags', 'assignee', 'repeat', 'remindAt'];
@@ -65,6 +66,32 @@ function expectedRev(req, fallback) {
   if (!m) throw new RequestError(400, 'invalid', 'The revision must be the task\'s rev, for example If-Match: "3".');
   return Number(m[1]);
 }
+
+// A client that might send the same change twice (a retry after the answer was lost,
+// or a change queued while offline) names it with an Idempotency-Key header. The
+// second time nothing is done again, and the answer is the task as it is now.
+function idempotencyKey(req) {
+  const raw = req.headers['idempotency-key'];
+  if (raw === undefined) return undefined;
+  const key = String(raw).trim();
+  if (!/^[\w-]{8,64}$/.test(key)) throw new RequestError(400, 'invalid', 'Idempotency-Key must be 8 to 64 letters, digits, hyphens or underscores.');
+  return key;
+}
+
+// When a captured line was typed, if the client says. Relative dates in the line
+// ("tomorrow", "fri", "3pm") are then read from that moment instead of from now.
+function capturedAt(at) {
+  if (at === undefined || at === null) return null;
+  const time = typeof at === 'string' ? Date.parse(at) : NaN;
+  if (Number.isNaN(time)) throw new RequestError(400, 'invalid', '"at" must be a timestamp, for example 2026-10-12T18:30:00Z.');
+  if (time > Date.now() + 5 * 60_000) throw new RequestError(400, 'invalid', '"at" is when the line was typed, so it cannot be in the future.');
+  return time;
+}
+
+const readLine = (text, at) => {
+  const time = capturedAt(at);
+  return time === null ? parseQuickAdd(text) : withClock(time, () => parseQuickAdd(text));
+};
 
 // ---------- listing ----------
 
@@ -139,7 +166,8 @@ function subtaskOf(taskId, subtaskId) {
 // ---------- routes ----------
 
 export function createV1({ remote, openStream, viaLabel }) {
-  const write = async (req, ctx) => ({ via: await viaLabel(req, ctx) });
+  // What every change records: who it came through, and its idempotency key if it has one.
+  const write = async (req, ctx) => ({ key: idempotencyKey(req), via: await viaLabel(req, ctx) });
 
   // [method, path template, handler({ req, res, ctx, url, params })]
   const ROUTES = [
@@ -226,19 +254,19 @@ export function createV1({ remote, openStream, viaLabel }) {
     }],
 
     // Quick capture: one line, parsed exactly as the app's capture box and add bar parse it.
-    // Takes JSON { "text": "..." } or the bare line as text/plain.
+    // Takes JSON { "text": "...", "at"?: when it was typed } or the bare line as text/plain.
     ['POST', '/capture', async ({ req, res, ctx }) => {
-      const { text } = only(await readJsonOrText(req, ctx.bodyLimit), ['text']);
+      const { text, at } = only(await readJsonOrText(req, ctx.bodyLimit), ['text', 'at']);
       if (typeof text !== 'string' || !text.trim()) throw new RequestError(400, 'invalid', 'Send the line to capture as "text".');
-      const parsed = parseQuickAdd(text);
+      const parsed = readLine(text, at);
       if (!parsed.title) throw new RequestError(400, 'invalid', 'That line has no title, only dates and markers.');
       const task = createTodo({ ...parsed.fields, title: parsed.title }, 'me', await write(req, ctx));
       res.setHeader('Location', `/api/v1/tasks/${task.id}`);
       return sendTask(res, 201, task, { parsed });
     }],
     ['POST', '/capture/preview', async ({ req, res, ctx }) => {
-      const { text } = only(await readJsonOrText(req, ctx.bodyLimit), ['text']);
-      return json(res, 200, parseQuickAdd(typeof text === 'string' ? text : ''));
+      const { text, at } = only(await readJsonOrText(req, ctx.bodyLimit), ['text', 'at']);
+      return json(res, 200, readLine(typeof text === 'string' ? text : '', at));
     }],
 
     // What the Mac's menu bar item lists, plus tasks due later than a week out.

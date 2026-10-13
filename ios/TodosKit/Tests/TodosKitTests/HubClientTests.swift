@@ -91,6 +91,35 @@ struct HubClientTests {
         #expect(preview.title == "Call dentist" && preview.fields.due == Day("2026-10-13"))
     }
 
+    @Test("a change can carry a key that makes it safe to send twice, and a capture can say when it was typed")
+    func keysAndTypedAt() async throws {
+        let key = UUID(uuidString: "0A1B2C3D-0000-4000-8000-00000000ABCD")!
+        for _ in 0..<8 { stub.reply(200, Self.task) }
+        _ = try await client.update(7, rev: 3, TaskPatch(priority: .low), key: key)
+        #expect(stub.last.value(forHTTPHeaderField: "Idempotency-Key") == "0A1B2C3D-0000-4000-8000-00000000ABCD")
+        #expect(stub.last.value(forHTTPHeaderField: "If-Match") == "\"3\"")
+        _ = try await client.complete(7, key: key)
+        _ = try await client.addComment(7, text: "x", key: key)
+        _ = try await client.addSubtask(7, title: "x", key: key)
+        _ = try await client.setSubtask(7, subtask: 1, done: true, key: key)
+        _ = try await client.renameSubtask(7, subtask: 1, title: "y", key: key)
+        _ = try await client.removeSubtask(7, subtask: 1, key: key)
+        _ = try await client.create(like: Sample.task, key: key)
+        #expect(stub.requests.allSatisfy { $0.value(forHTTPHeaderField: "Idempotency-Key") == key.uuidString })
+        #expect(stub.last.httpMethod == "POST" && stub.last.url?.path == "/api/v1/tasks")
+        #expect(stub.body()["title"] as? String == "Renew passport" && stub.body()["repeat"] as? String == "yearly")
+        #expect(stub.body()["subtasks"] as? [String] == ["Fill in form", "Book slot"])
+
+        stub.reply(201, #"{"task":\#(Sample.taskJSON),"parsed":{"title":"Renew passport","fields":{}}}"#)
+        _ = try await client.capture("Renew passport tomorrow", typedAt: Date(timeIntervalSince1970: 1_792_072_800), key: key)
+        #expect(stub.body()["text"] as? String == "Renew passport tomorrow")
+        #expect(stub.body()["at"] as? String == "2026-10-15T14:00:00.000Z")
+
+        stub.reply(201, #"{"task":\#(Sample.taskJSON),"parsed":{"title":"Renew passport","fields":{}}}"#)
+        _ = try await client.capture("Typed just now")
+        #expect(stub.body()["at"] == nil && stub.last.value(forHTTPHeaderField: "Idempotency-Key") == nil)
+    }
+
     @Test("the whole list is fetched a page at a time")
     func paging() async throws {
         let summary = #"{"open":3,"in_progress":0,"blocked":0,"overdue":0,"due_today":0,"claude":0,"done_7d":0}"#
@@ -196,23 +225,24 @@ struct HubClientTests {
 
 @Suite("Version checks")
 struct CompatibilityTests {
-    @Test("the app needs API version 1, at revision 2 or later")
+    @Test("the app needs API version 1, at revision 3 or later")
     func rules() {
-        #expect(Compatibility(ServerMeta(version: 1, revision: 2)) == .compatible)
+        #expect(Compatibility(ServerMeta(version: 1, revision: 3)) == .compatible)
         #expect(Compatibility(ServerMeta(version: 1, revision: 9)) == .compatible, "later revisions only add things")
+        #expect(Compatibility(ServerMeta(version: 1, revision: 2)) == .serverTooOld(revision: 2), "Todos 1.5: no safe retries")
         #expect(Compatibility(ServerMeta(version: 1, revision: 1)) == .serverTooOld(revision: 1))
         #expect(Compatibility(ServerMeta(version: 2, revision: 1)) == .serverTooNew(version: 2))
         #expect(Compatibility(ServerMeta(version: 0, revision: 5)) == .serverTooOld(revision: 5))
-        #expect(Compatibility.requiredRevision == 2 && Compatibility.apiVersion == 1)
+        #expect(Compatibility.requiredRevision == 3 && Compatibility.apiVersion == 1)
     }
 
     @Test("a current Mac is compatible")
     func current() async throws {
         let stub = StubTransport()
-        stub.reply(200, #"{"api":{"version":1,"revision":2},"app":{"name":"Todos","version":"1.5.0"}}"#)
+        stub.reply(200, #"{"api":{"version":1,"revision":3},"app":{"name":"Todos","version":"1.6.0"}}"#)
         let check = try await Sample.client(stub).checkCompatibility()
         #expect(check.result == .compatible)
-        #expect(check.meta?.app?.version == "1.5.0")
+        #expect(check.meta?.app?.version == "1.6.0")
     }
 
     @Test("Todos 1.4 has no /meta, and its 404 means too old")
@@ -250,6 +280,6 @@ struct CompatibilityTests {
         #expect(ConnectionIssue(.serverTooNew(version: 2)) == .serverTooNew)
         #expect(ConnectionIssue.serverTooOld.action == "Update Todos on your Mac.")
         #expect(ConnectionIssue.serverTooNew.action == "Update Todos on this iPhone.")
-        #expect(ConnectionIssue.serverTooOld.explanation.contains("1.5"))
+        #expect(ConnectionIssue.serverTooOld.explanation.contains("1.6"))
     }
 }

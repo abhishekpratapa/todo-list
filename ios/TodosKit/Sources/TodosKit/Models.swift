@@ -150,8 +150,9 @@ public struct TodoTask: Codable, Sendable, Hashable, Identifiable {
         self.comments = comments
     }
 
+    /// How many comments the task has. A list says so directly; otherwise they are counted from the history.
     public var commentCount: Int {
-        activity?.filter { $0.kind == .comment }.count ?? comments ?? 0
+        comments ?? activity?.filter { $0.kind == .comment }.count ?? 0
     }
 
     public var subtasksDone: Int { subtasks.filter(\.done).count }

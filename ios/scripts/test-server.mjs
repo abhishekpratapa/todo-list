@@ -12,6 +12,7 @@
 //   {"cmd":"mac.create","input":{...}}       {"cmd":"mac.delete","id":1}
 //   {"cmd":"rotate"}                         a new access token, as Rotate Access Token does
 //   {"cmd":"enabled","on":false}             the remote access switch
+//   {"cmd":"listening","on":false}           stop answering altogether, as when the Mac is asleep
 //   {"cmd":"version"}                        the list's current version
 //
 // It exits when standard input closes, so a test run that dies takes it along.
@@ -41,10 +42,11 @@ const remote = createRemote({ tokenFile: path.join(dir, 'token'), enabled: true 
 remote.hosts.add(TAILNET);
 remote.ownerLogin = OWNER;
 remote.deviceName = async () => 'localhost'; // what Tailscale reports for an iPhone
-const server = await startServer({ port: 0, remote });
+let server = await startServer({ port: 0, remote });
+const { port } = server;
 
 const say = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-say({ ready: true, port: server.port, token: remote.token, tailnet: TAILNET, owner: OWNER });
+say({ ready: true, port, token: remote.token, tailnet: TAILNET, owner: OWNER });
 
 const commands = {
   'mac.update': ({ id, patch, by = 'me' }) => ({ task: store.updateTodo(id, patch, by).todo }),
@@ -56,18 +58,28 @@ const commands = {
     return {};
   },
   version: () => ({ version: store.load().version }),
+  // Changes made with mac.* commands still happen while it is not listening, as they
+  // would on a Mac whose Todos is running but which the phone can't reach.
+  listening: async ({ on }) => {
+    if (on && !server) server = await startServer({ port, remote });
+    if (!on && server) {
+      server.close();
+      server = null;
+    }
+    return {};
+  },
 };
 
 const quit = () => {
-  server.close();
+  server?.close();
   process.exit(0);
 };
-readline.createInterface({ input: process.stdin }).on('line', (line) => {
+readline.createInterface({ input: process.stdin }).on('line', async (line) => {
   try {
     const message = JSON.parse(line);
     const run = commands[message.cmd];
     if (!run) throw new Error(`Unknown command ${message.cmd}`);
-    say({ ok: true, ...run(message) });
+    say({ ok: true, ...(await run(message)) });
   } catch (e) {
     say({ ok: false, error: e.message });
   }

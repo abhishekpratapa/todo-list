@@ -19,11 +19,40 @@ struct TaskListView: View {
                         .buttonStyle(.plain)
                 }
             }
+            if !model.needingAttention.isEmpty {
+                Section {
+                    Button { model.isShowingSync = true } label: {
+                        Label(model.needingAttention.count == 1 ? "1 change needs your decision" : "\(model.needingAttention.count) changes need your decision",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.subheadline.weight(.semibold))
+                    }
+                }
+            }
+            if !model.waitingAdditions.isEmpty {
+                Section {
+                    ForEach(model.waitingAdditions) { change in
+                        Label {
+                            Text(verbatim: change.capturedLine ?? change.summary)
+                        } icon: {
+                            Image(systemName: "clock").foregroundStyle(.secondary)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) { Task { await model.discard(change) } } label: { Label("Remove", systemImage: "trash") }
+                        }
+                        .accessibilityLabel("Waiting to be added: \(change.capturedLine ?? change.summary)")
+                    }
+                } header: {
+                    Text("Waiting for your Mac · \(model.waitingAdditions.count)")
+                } footer: {
+                    Text("Your Mac reads each line when it can be reached, with dates counted from when you typed it.")
+                }
+            }
             ForEach(sections) { section in
                 Section {
                     ForEach(section.tasks) { task in
                         NavigationLink(value: task.id) {
-                            TaskRow(task: task)
+                            TaskRow(task: task, isWaiting: model.hasWaitingChanges(task.id), needsAttention: model.needsAttention(task.id))
                         }
                         .swipeActions(edge: .leading, allowsFullSwipe: true) { leadingActions(task) }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) { trailingActions(task) }
@@ -33,10 +62,12 @@ struct TaskListView: View {
                     Text("\(section.status.label) · \(section.tasks.count)")
                 }
             }
-            if model.hasLoaded, !sections.isEmpty {
+            if model.hasLoaded {
                 Section {
                 } footer: {
-                    SyncFooter()
+                    Button { model.isShowingSync = true } label: { SyncFooter() }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Shows what is waiting to be sent")
                 }
             }
         }
@@ -172,7 +203,7 @@ struct TaskListView: View {
             } else {
                 ProgressView("Loading from your Mac…")
             }
-        } else if sections.isEmpty {
+        } else if sections.isEmpty, model.waitingAdditions.isEmpty {
             if model.query.isNarrowed {
                 ContentUnavailableView.search
             } else {
@@ -186,26 +217,43 @@ struct TaskListView: View {
     }
 }
 
-/// One line at the bottom of the list saying how fresh it is.
+/// One line at the bottom of the list: how fresh it is, and what is still to be sent.
 struct SyncFooter: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             HStack(spacing: 6) {
-                Image(systemName: model.isLive ? "dot.radiowaves.left.and.right" : "clock")
-                Text(text(at: context.date))
+                Image(systemName: model.isSending ? "arrow.up.circle" : model.isLive ? "dot.radiowaves.left.and.right" : "clock")
+                Text(SyncText.status(model, at: context.date))
             }
             .font(.footnote)
+            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .combine)
         }
     }
+}
 
-    private func text(at now: Date) -> String {
-        guard let synced = model.lastSynced else { return "Not updated yet" }
-        if model.isLive { return "Up to date · updates live" }
-        return now.timeIntervalSince(synced) < 60 ? "Updated just now" : "Updated \(synced.formatted(.relative(presentation: .named)))"
+enum SyncText {
+    /// "Up to date · updates live", "Updated 5 minutes ago · 3 changes waiting".
+    @MainActor
+    static func status(_ model: AppModel, at now: Date = Date()) -> String {
+        var parts: [String] = []
+        if let synced = model.lastSynced {
+            if model.isLive, model.issue == nil {
+                parts.append("Up to date · updates live")
+            } else {
+                parts.append(now.timeIntervalSince(synced) < 60 ? "Updated just now" : "Updated \(synced.formatted(.relative(presentation: .named)))")
+            }
+        } else {
+            parts.append("Not updated yet")
+        }
+        let waiting = model.waiting.count
+        if waiting > 0 { parts.append(waiting == 1 ? "1 change waiting" : "\(waiting) changes waiting") }
+        let attention = model.needingAttention.count
+        if attention > 0 { parts.append(attention == 1 ? "1 needs your decision" : "\(attention) need your decision") }
+        return parts.joined(separator: " · ")
     }
 }
 

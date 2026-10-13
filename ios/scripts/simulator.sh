@@ -12,6 +12,7 @@
 #
 #   {"cmd":"mac.create","input":{"title":"Added on the Mac","due":"tomorrow"}}
 #   {"cmd":"mac.update","id":1,"patch":{"comment":"On it."},"by":"Claude Code · repo"}
+#   {"cmd":"listening","on":false}      (the Mac goes out of reach; "on":true brings it back)
 #   {"cmd":"rotate"}
 #
 # Press Control-C to stop the server. Its data is deleted.

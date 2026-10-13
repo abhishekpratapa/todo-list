@@ -254,6 +254,110 @@ test('quick capture accepts a bare line of text, for Shortcuts and scripts', asy
   assert.equal((await api('POST', '/capture/preview', { body: { text: '#work tomorrow' } })).body.title, '', 'preview shows an empty title rather than failing');
 });
 
+test('a captured line can say when it was typed, and relative dates are read from then', async () => {
+  // Noon on a Tuesday some months ago, in this machine's own time zone.
+  const typed = new Date(2026, 2, 10, 12, 0, 0);
+  const at = typed.toISOString();
+  const on = (y, m, d) => store.ymd(new Date(y, m - 1, d));
+
+  const preview = await api('POST', '/capture/preview', { body: { text: 'Call dentist tomorrow 3pm', at } });
+  assert.equal(preview.status, 200);
+  assert.deepEqual(preview.body, { title: 'Call dentist', fields: { due: on(2026, 3, 11), remindAt: new Date(2026, 2, 11, 15, 0, 0).toISOString() } });
+
+  const cases = [
+    ['Renew passport fri !high', { due: on(2026, 3, 13), priority: 'high' }],
+    ['Pay rent today', { due: on(2026, 3, 10) }],
+    ['Stretch 9am', { due: on(2026, 3, 11), remindAt: new Date(2026, 2, 11, 9, 0, 0).toISOString() }], // 9am had passed when it was typed
+    ['Stretch 6pm', { due: on(2026, 3, 10), remindAt: new Date(2026, 2, 10, 18, 0, 0).toISOString() }], // still ahead when it was typed
+    ['Review in 3 days', { due: on(2026, 3, 13) }],
+    ['Taxes apr 15', { due: on(2026, 4, 15) }],
+    ['Water plants every friday', { repeat: 'weekly', due: on(2026, 3, 13) }],
+  ];
+  for (const [text, fields] of cases) {
+    const res = await api('POST', '/capture', { body: { text, at } });
+    assert.equal(res.status, 201, text);
+    assert.deepEqual(res.body.parsed.fields, fields, text);
+    for (const [key, value] of Object.entries(fields)) assert.deepEqual(res.body.task[key], value, `${text}: ${key}`);
+    assert.ok(Date.now() - Date.parse(res.body.task.createdAt) < 5000, 'the task itself is created now');
+  }
+
+  // Without it, a line is read from now, as before.
+  assert.equal((await api('POST', '/capture', { body: { text: 'Pay rent today' } })).body.task.due, day(0));
+  assert.equal(store.today(), day(0), 'and reading an old line leaves the clock alone');
+
+  for (const bad of ['yesterday', 12345, '', new Date(Date.now() + 3600_000).toISOString()]) {
+    const res = await api('POST', '/capture', { body: { text: 'x', at: bad } });
+    assert.deepEqual([res.status, res.body.error.code], [400, 'invalid'], `at: ${JSON.stringify(bad)}`);
+  }
+});
+
+test('a change sent twice with the same Idempotency-Key is only made once', async () => {
+  const key = (name) => ({ 'idempotency-key': `test-${name}-${Date.now()}` });
+  const count = async () => (await api('GET', '/tasks?status=all&limit=500')).body.total;
+
+  // Capture: the retry returns the task the first attempt made.
+  const before = await count();
+  const capture = key('capture');
+  const first = await api('POST', '/capture', { body: { text: 'Only once fri' }, headers: capture });
+  const again = await api('POST', '/capture', { body: { text: 'Only once fri' }, headers: capture });
+  assert.equal(first.status, 201);
+  assert.equal(again.body.task.id, first.body.task.id);
+  assert.equal(await count(), before + 1);
+  const { id } = first.body.task;
+
+  // Creating a task directly behaves the same way.
+  const create = key('create');
+  const made = await api('POST', '/tasks', { body: { title: 'Made once' }, headers: create });
+  assert.equal((await api('POST', '/tasks', { body: { title: 'Made once' }, headers: create })).body.task.id, made.body.task.id);
+  assert.equal(await count(), before + 2);
+
+  // A comment, a subtask and a checked subtask are not repeated either.
+  const comment = key('comment');
+  await api('POST', `/tasks/${id}/comments`, { body: { text: 'Said once' }, headers: comment });
+  await api('POST', `/tasks/${id}/comments`, { body: { text: 'Said once' }, headers: comment });
+  const subtask = key('subtask');
+  await api('POST', `/tasks/${id}/subtasks`, { body: { title: 'Step one' }, headers: subtask });
+  await api('POST', `/tasks/${id}/subtasks`, { body: { title: 'Step one' }, headers: subtask });
+  let { task } = (await api('GET', `/tasks/${id}`)).body;
+  assert.equal(task.activity.filter((a) => a.text === 'Said once').length, 1);
+  assert.deepEqual(task.subtasks.map((x) => x.title), ['Step one']);
+
+  // An edit whose answer was lost: the retry is based on a revision the first
+  // attempt has already moved past. It is recognised, not refused as a conflict.
+  const edit = key('edit');
+  const patched = await api('PATCH', `/tasks/${id}`, { body: { priority: 'high' }, headers: { 'if-match': `"${task.rev}"`, ...edit } });
+  assert.equal(patched.status, 200);
+  const retried = await api('PATCH', `/tasks/${id}`, { body: { priority: 'high' }, headers: { 'if-match': `"${task.rev}"`, ...edit } });
+  assert.equal(retried.status, 200);
+  assert.deepEqual(retried.body.task, patched.body.task, 'nothing changed the second time, not even the revision');
+  // The same stale edit without the key is a conflict, as always.
+  assert.equal((await api('PATCH', `/tasks/${id}`, { body: { priority: 'low' }, headers: { 'if-match': `"${task.rev}"` } })).status, 409);
+
+  // Completing a repeating task twice must not create two next occurrences.
+  const repeating = (await api('POST', '/tasks', { body: { title: 'Daily thing', repeat: 'daily', due: 'today' } })).body.task;
+  const complete = key('complete');
+  const done = await api('POST', `/tasks/${repeating.id}/complete`, { headers: complete });
+  const doneAgain = await api('POST', `/tasks/${repeating.id}/complete`, { headers: complete });
+  assert.ok(done.body.next);
+  assert.equal(doneAgain.body.next, null);
+  assert.equal((await api('GET', '/tasks?q=Daily+thing&status=all')).body.total, 2, 'the finished one and exactly one next occurrence');
+
+  // A repeat announces no change: the list's version does not move.
+  const version = store.load().version;
+  await api('POST', '/capture', { body: { text: 'Only once fri' }, headers: capture });
+  assert.equal(store.load().version, version);
+
+  // Keys are opaque but must look like keys.
+  for (const bad of ['short', 'has spaces in it', 'x'.repeat(65), 'semi;colon-key']) {
+    const res = await api('POST', '/capture', { body: { text: 'x' }, headers: { 'idempotency-key': bad } });
+    assert.deepEqual([res.status, res.body.error.code], [400, 'invalid'], bad);
+  }
+  // Without a key, sending twice makes two, as it always has.
+  await api('POST', '/capture', { body: { text: 'Twice' } });
+  await api('POST', '/capture', { body: { text: 'Twice' } });
+  assert.equal((await api('GET', '/tasks?q=Twice&status=all')).body.total, 2);
+});
+
 test('due groups match what the menu bar lists, and the summary matches the 9 AM notification', async () => {
   const due = await api('GET', '/due');
   assert.equal(due.status, 200);

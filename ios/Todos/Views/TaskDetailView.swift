@@ -18,7 +18,6 @@ struct TaskDetailView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.open(taskID) }
-        .onDisappear { model.close(taskID) }
     }
 }
 
@@ -42,6 +41,20 @@ private struct TaskDetailForm: View {
 
     var body: some View {
         Form {
+            if model.needsAttention(task.id) {
+                Section {
+                    Button { model.isShowingSync = true } label: {
+                        Label("A change you made needs your decision", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+            } else if model.hasWaitingChanges(task.id) {
+                Section {
+                    Label("Your changes are saved here and will be sent when your Mac can be reached.", systemImage: "clock")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Section {
                 CommitField(prompt: "Title", value: task.title, axis: .vertical) { title in
                     if !title.isEmpty { update(TaskPatch(title: title)) }
@@ -225,9 +238,7 @@ private struct TaskDetailForm: View {
         let title = newSubtask.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         newSubtask = ""
-        Task {
-            if !(await model.addSubtask(task.id, title)) { newSubtask = title } // not saved: give it back
-        }
+        Task { await model.addSubtask(task.id, title) }
     }
 
     // MARK: Comments and history
@@ -272,9 +283,7 @@ private struct TaskDetailForm: View {
         guard !text.isEmpty else { return }
         newComment = ""
         commentFocused = false
-        Task {
-            if !(await model.addComment(task.id, text)) { newComment = text } // not saved: give it back
-        }
+        Task { await model.addComment(task.id, text) }
     }
 
     @ViewBuilder

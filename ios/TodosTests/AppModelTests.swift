@@ -1,238 +1,365 @@
-// The app's behaviour around pairing and changes, with the network replaced by
-// canned answers. The real Keychain is used, under a service name of its own.
+// The app's behaviour: pairing, opening with no connection, changes made offline,
+// sending them later, and what happens when the Mac changed the same task.
+// The network is a stand-in Mac (FakeMac); the Keychain and the files on disk are real.
 
 import Foundation
 import Testing
 @testable import Todos
 @testable import TodosKit
 
-/// Answers requests in order with whatever the test queued, and remembers what was asked.
-final class CannedHub: @unchecked Sendable {
-    private let lock = NSLock()
-    private var replies: [(status: Int, body: String)] = []
-    private var sent: [URLRequest] = []
-    private var down = false
-
-    func reply(_ status: Int, _ body: String) { lock.withLock { replies.append((status, body)) } }
-    func goDown() { lock.withLock { down = true } }
-    var requests: [URLRequest] { lock.withLock { sent } }
-
-    func client(_ credentials: HubCredentials) -> HubClient {
-        HubClient(credentials: credentials, session: .shared) { [self] request in
-            let reply: (status: Int, body: String) = try lock.withLock {
-                sent.append(request)
-                if down { throw URLError(.timedOut) }
-                return replies.isEmpty ? (500, "{}") : replies.removeFirst()
-            }
-            return (Data(reply.body.utf8), HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1", headerFields: nil)!)
-        }
-    }
-}
-
 @MainActor
-@Suite("Pairing and changes")
+@Suite("The app, online and off")
 struct AppModelTests {
-    let hub = CannedHub()
-    let store = KeychainCredentialStore(service: "com.abhishekpratapa.todos.tests.\(UUID().uuidString)")
+    let mac = FakeMac()
+    let keychain = KeychainCredentialStore(service: "com.abhishekpratapa.todos.tests.\(UUID().uuidString)")
     let credentials = try! HubCredentials(address: HubAddress("my-mac.tail1234.ts.net"), token: "test-token-\(UUID().uuidString)")
-
-    static let meta = #"{"api":{"version":1,"revision":2},"app":{"name":"Todos","version":"1.5.0"}}"#
-    static let counts = #"{"open":1,"in_progress":0,"blocked":0,"overdue":0,"due_today":0,"claude":0,"done_7d":0}"#
-
-    static func task(rev: Int = 1, title: String = "Renew passport", priority: String = "medium", activity: String = "[]") -> String {
-        #"{"id":7,"title":"\#(title)","notes":"","status":"todo","priority":"\#(priority)","due":null,"project":null,"tags":[],"assignee":"me","subtasks":[],"repeat":null,"remindAt":null,"remindedAt":null,"rev":\#(rev),"createdBy":"me","createdAt":"2026-10-05T14:58:12.345Z","updatedAt":"2026-10-05T14:58:12.345Z","completedAt":null,"activity":\#(activity)}"#
-    }
-
-    static func list(_ tasks: String...) -> String {
-        #"{"tasks":[\#(tasks.joined(separator: ","))],"total":\#(tasks.count),"summary":\#(counts),"version":3}"#
-    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("todos-app-tests-\(UUID().uuidString)", isDirectory: true)
 
     /// The live connection, driven by the test: `live.yield(...)` is the Mac's event stream reporting something.
     private let channel = AsyncStream.makeStream(of: LiveState.self)
-    var liveStates: AsyncStream<LiveState> { channel.stream }
     var live: AsyncStream<LiveState>.Continuation { channel.continuation }
 
-    func model() -> AppModel {
-        AppModel(store: store, makeClient: { [hub] in hub.client($0) }, liveStates: { [liveStates] _ in liveStates })
+    /// A fresh launch of the app, with the same Keychain item and the same files on disk.
+    func launch() -> AppModel {
+        AppModel(credentials: keychain, makeClient: { [mac] in mac.client($0) }, liveStates: { [channel] _ in channel.stream }, dataDirectory: directory)
     }
 
-    /// A model that has paired and loaded one task.
+    /// An app that has paired and loaded the list.
     func paired() async -> AppModel {
-        let model = model()
-        hub.reply(200, Self.meta)
-        hub.reply(200, Self.list(Self.task()))
+        let model = launch()
         #expect(await model.pair(credentials) == nil)
         return model
     }
 
+    func cleanUp() {
+        try? keychain.clear()
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     /// Waits for something that happens a moment later, on the model's own schedule.
     func eventually(_ condition: () -> Bool) async -> Bool {
-        for _ in 0..<200 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<300 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         return condition()
     }
 
+    // MARK: Pairing
+
     @Test("pairing keeps the token only once the Mac has accepted it, and only in the Keychain")
     func pairing() async throws {
-        defer { try? store.clear() }
-        let model = model()
+        defer { cleanUp() }
+        mac.add("Renew passport")
+        let model = launch()
         await model.start()
         #expect(model.phase == .unpaired)
 
-        hub.reply(200, Self.meta)
-        hub.reply(200, Self.list(Self.task()))
         #expect(await model.pair(credentials) == nil)
-        #expect(model.phase == .paired)
-        #expect(model.address == credentials.address)
-        #expect(model.macVersion == "1.5.0")
+        #expect(model.phase == .paired && model.address == credentials.address && model.macVersion == "1.6.0")
         #expect(model.tasks.map(\.title) == ["Renew passport"])
-        #expect(try store.load() == credentials)
+        #expect(model.hasLoaded && model.lastSynced != nil && model.issue == nil)
+        #expect(try keychain.load() == credentials)
 
-        // The token is in the Keychain and nowhere else this app writes.
-        let token = credentials.token
-        #expect(!"\(UserDefaults.standard.dictionaryRepresentation())".contains(token))
-        let home = URL(fileURLWithPath: NSHomeDirectory())
-        let files = FileManager.default.enumerator(at: home, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])
+        // The token is in the Keychain and nowhere else this app writes: not UserDefaults,
+        // not the list kept on disk, not any other file in the app's container.
+        let token = Data(credentials.token.utf8)
+        #expect(!"\(UserDefaults.standard.dictionaryRepresentation())".contains(credentials.token))
+        var filesChecked = 0
+        let files = FileManager.default.enumerator(at: URL(fileURLWithPath: NSHomeDirectory()), includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])
         while let file = files?.nextObject() as? URL {
             guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]), values.isRegularFile == true, (values.fileSize ?? 0) < 5_000_000,
                   let data = try? Data(contentsOf: file) else { continue }
-            #expect(data.range(of: Data(token.utf8)) == nil, "found the token in \(file.lastPathComponent)")
+            filesChecked += 1
+            #expect(data.range(of: token) == nil, "found the token in \(file.lastPathComponent)")
         }
+        #expect(filesChecked > 0 && FileManager.default.fileExists(atPath: directory.path), "the list on disk was among the files checked")
     }
 
-    @Test("a wrong token, an old Mac or no connection: nothing is saved and the reason is given")
+    @Test("a wrong token, a Mac that is too old or too new, or no connection: nothing is saved and the reason is given")
     func pairingRefused() async throws {
-        defer { try? store.clear() }
-        let model = model()
+        defer { cleanUp() }
+        let model = launch()
         await model.start()
 
-        hub.reply(401, #"{"error":{"code":"unauthorized","message":"That access token is not valid."}}"#)
+        mac.tokenRevoked = true
         #expect(await model.pair(credentials) == .tokenRevoked)
+        mac.tokenRevoked = false
 
-        hub.reply(404, #"{"error":{"code":"not_found","message":"No such endpoint."}}"#)
+        mac.apiRevision = 2 // Todos 1.5
         #expect(await model.pair(credentials) == .serverTooOld)
+        mac.apiRevision = Compatibility.requiredRevision
 
-        hub.reply(200, #"{"api":{"version":2,"revision":1}}"#)
-        #expect(await model.pair(credentials) == .serverTooNew)
-
-        hub.goDown()
+        mac.isUnreachable = true
         let issue = await model.pair(credentials)
         #expect(issue == .macUnreachable || issue == .tailscaleOff)
 
         #expect(model.phase == .unpaired)
-        #expect(try store.load() == nil)
+        #expect(try keychain.load() == nil)
     }
 
-    @Test("the next launch finds the pairing; unpairing removes it")
-    func relaunchAndUnpair() async throws {
-        defer { try? store.clear() }
+    // MARK: Offline
+
+    @Test("the app opens with the list it last had, even with no connection at all")
+    func opensOffline() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport") { $0.notes = "Bring **photos**" }
+        mac.edit(1) { $0.activity?.append(ActivityEntry(at: Date(), by: "Claude Code · passport", kind: .comment, text: "Form is filled in.")) }
+        mac.add("Done already") { $0.status = .done }
         _ = await paired()
 
-        let relaunched = model()
-        hub.reply(200, Self.meta)
-        hub.reply(200, Self.list(Self.task()))
+        mac.isUnreachable = true
+        let relaunched = launch()
         await relaunched.start()
         #expect(relaunched.phase == .paired)
-        #expect(relaunched.tasks.count == 1)
-        #expect(hub.requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer \(credentials.token)")
-
-        relaunched.unpair()
-        #expect(relaunched.phase == .unpaired)
-        #expect(relaunched.tasks.isEmpty && relaunched.address == nil)
-        #expect(try store.load() == nil)
+        #expect(relaunched.hasLoaded, "there is a list to show at once")
+        #expect(relaunched.tasks.map(\.title) == ["Renew passport", "Done already"])
+        #expect(relaunched.task(1)?.notes == "Bring **photos**")
+        #expect(relaunched.task(1)?.activity?.contains { $0.text == "Form is filled in." } == true, "comments can be read offline")
+        #expect(relaunched.lastSynced != nil)
+        #expect(relaunched.issue == .macUnreachable || relaunched.issue == .tailscaleOff)
     }
 
-    @Test("an edit shows at once and is sent with the revision it was based on")
-    func edit() async throws {
-        defer { try? store.clear() }
+    @Test("a change made offline shows at once, waits, and is sent when the Mac is back")
+    func offlineEdit() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport")
         let model = await paired()
-        hub.reply(200, #"{"task":\#(Self.task(rev: 2, priority: "high")),"next":null}"#)
-        await model.update(7, TaskPatch(priority: .high))
-        #expect(model.task(7)?.priority == .high && model.task(7)?.rev == 2)
-        let request = try #require(hub.requests.last)
-        #expect(request.httpMethod == "PATCH" && request.value(forHTTPHeaderField: "If-Match") == "\"1\"")
+        mac.isUnreachable = true
+
+        await model.update(1, TaskPatch(title: "Renew passport this week", priority: .high))
+        await model.addComment(1, "Booked from the train")
+        await model.complete(1)
+        #expect(model.task(1)?.title == "Renew passport this week" && model.task(1)?.status == .done, "shown straight away")
+        #expect(model.task(1)?.activity?.last?.text == "Booked from the train")
+        #expect(model.waiting.count == 3 && model.hasWaitingChanges(1))
+        #expect(model.issue != nil)
+        #expect(mac.task(1)?.title == "Renew passport", "nothing has reached the Mac")
+        #expect(SyncText.status(model).contains("3 changes waiting"))
+
+        // The app is closed and opened again, still offline: the changes are still there.
+        let relaunched = launch()
+        await relaunched.start()
+        #expect(relaunched.waiting.count == 3)
+        #expect(relaunched.task(1)?.title == "Renew passport this week")
+
+        mac.isUnreachable = false
+        await relaunched.retry()
+        #expect(relaunched.waiting.isEmpty && relaunched.issue == nil)
+        let onMac = try #require(mac.task(1))
+        #expect(onMac.title == "Renew passport this week" && onMac.priority == .high && onMac.status == .done)
+        #expect(onMac.activity?.contains { $0.text == "Booked from the train" } == true)
+        let shown = try #require(relaunched.task(1))
+        #expect(shown.rev == onMac.rev && shown.title == onMac.title && shown.status == onMac.status && shown.priority == onMac.priority, "and the phone now shows what the Mac has")
+        #expect(shown.activity?.map(\.text) == onMac.activity?.map(\.text) && shown.commentCount == 1)
     }
 
-    @Test("when the task changed on the Mac first, the Mac's version shows and my change is offered again, not dropped")
-    func conflict() async throws {
-        defer { try? store.clear() }
+    @Test("several edits to one task while offline are sent as one change")
+    func editsJoin() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport")
         let model = await paired()
-        let theirs = Self.task(rev: 2, priority: "high", activity: #"[{"at":"2026-10-12T09:00:00.000Z","by":"Claude Code · passport","kind":"event","text":"set priority to high"}]"#)
-        hub.reply(409, #"{"error":{"code":"conflict","message":"changed","current":\#(theirs)}}"#)
-        await model.update(7, TaskPatch(title: "Renew passport this week"))
-
-        let conflict = try #require(model.conflict)
-        #expect(model.task(7)?.title == "Renew passport" && model.task(7)?.priority == .high, "showing the Mac's version")
-        #expect(ConflictText.message(for: conflict).contains("Claude Code · passport"))
-        #expect(ConflictText.message(for: conflict).contains("title"))
-
-        // Applying it goes on top of the Mac's version, at its revision.
-        hub.reply(200, #"{"task":\#(Self.task(rev: 3, title: "Renew passport this week", priority: "high")),"next":null}"#)
-        await model.resolve(conflict, applyMine: true)
-        #expect(model.conflict == nil)
-        #expect(hub.requests.last?.value(forHTTPHeaderField: "If-Match") == "\"2\"")
-        #expect(model.task(7)?.title == "Renew passport this week" && model.task(7)?.priority == .high, "both changes survive")
+        mac.isUnreachable = true
+        await model.update(1, TaskPatch(title: "Renew passport today"))
+        await model.update(1, TaskPatch(priority: .high))
+        await model.update(1, TaskPatch(title: "Renew the passport today", due: .set(Day("2027-01-05")!)))
+        #expect(model.waiting.count == 1)
+        #expect(model.waiting.first?.kind == .update(task: 1, baseRev: 1,
+                                                    base: TaskPatch(title: "Renew passport", priority: .medium, due: .clear),
+                                                    patch: TaskPatch(title: "Renew the passport today", priority: .high, due: .set(Day("2027-01-05")!))))
+        mac.isUnreachable = false
+        let writesBefore = mac.writes.count
+        await model.retry()
+        #expect(mac.writes.count == writesBefore + 1)
+        #expect(mac.task(1)?.title == "Renew the passport today" && mac.task(1)?.due == Day("2027-01-05"))
     }
 
-    @Test("a change that can't be sent is taken back, and says so")
-    func unreachable() async throws {
-        defer { try? store.clear() }
+    @Test("a line captured offline waits as typed, and becomes a task when the Mac is back")
+    func offlineCapture() async throws {
+        defer { cleanUp() }
         let model = await paired()
-        hub.goDown()
-        await model.update(7, TaskPatch(title: "Never arrives"))
-        #expect(model.task(7)?.title == "Renew passport")
-        #expect(model.notice?.isError == true)
-        #expect(model.issue == .macUnreachable || model.issue == .tailscaleOff)
+        mac.isUnreachable = true
+        await model.capture("Call dentist tomorrow 3pm")
+        #expect(model.waitingAdditions.map(\.capturedLine) == ["Call dentist tomorrow 3pm"])
+        #expect(model.notice?.text.contains("Saved") == true)
+        #expect(mac.all.isEmpty)
+        #expect(await model.preview("Call dentist tomorrow 3pm") == nil, "no guessing at how the Mac will read it")
 
-        await model.complete(7)
-        #expect(model.task(7)?.status == .todo)
-        #expect(await model.capture("Something new") == false)
+        mac.isUnreachable = false
+        await model.retry()
+        #expect(model.waitingAdditions.isEmpty)
+        #expect(mac.all.map(\.title) == ["Call dentist tomorrow 3pm"], "the stand-in Mac keeps the line as its title")
+        #expect(mac.writes.last?.value(forHTTPHeaderField: "Idempotency-Key") != nil)
         #expect(model.tasks.count == 1)
     }
 
-    @Test("a live update reloads the list only when the Mac's version has moved on")
-    func liveUpdate() async throws {
-        defer { try? store.clear() }
+    // MARK: When the Mac changed it too
+
+    @Test("an edit to a different field than the Mac changed is merged without asking")
+    func mergesQuietly() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport")
         let model = await paired()
-        let before = hub.requests.count
-
-        live.yield(.live(version: 3)) // the version the list already has
-        #expect(await eventually { model.isLive })
-        #expect(hub.requests.count == before, "nothing to fetch")
-
-        hub.reply(200, Self.list(Self.task(rev: 2, title: "Renew passport today"), Self.task().replacingOccurrences(of: #""id":7"#, with: #""id":8"#)))
-        live.yield(.changed(version: 4))
-        #expect(await eventually { model.tasks.count == 2 })
-        #expect(model.task(7)?.title == "Renew passport today")
-        #expect(model.lastSynced != nil && model.issue == nil)
+        mac.edit(1) { $0.priority = .high } // the phone hasn't heard about this yet
+        await model.update(1, TaskPatch(title: "Renew passport this week"))
+        #expect(model.needingAttention.isEmpty && model.waiting.isEmpty)
+        #expect(mac.task(1)?.title == "Renew passport this week" && mac.task(1)?.priority == .high, "both changes survive")
+        #expect(model.task(1)?.priority == .high)
     }
 
-    @Test("losing the connection shows why; getting it back clears it")
-    func connectionLostAndBack() async throws {
-        defer { try? store.clear() }
+    @Test("an edit to the same field is not applied over the Mac's, and not dropped: I choose")
+    func conflict() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport") { $0.notes = "Original" }
         let model = await paired()
-        live.yield(.live(version: 3))
-        #expect(await eventually { model.isLive })
+        mac.edit(1, by: "Claude Code · passport") { $0.title = "Renew passport (urgent)"; $0.notes = "Claude’s notes" }
 
+        await model.update(1, TaskPatch(title: "Renew passport this week", notes: "My notes", priority: .low))
+        #expect(mac.task(1)?.title == "Renew passport (urgent)", "the Mac's title is untouched")
+        #expect(mac.task(1)?.priority == .low, "the part that didn't overlap went through")
+        let change = try #require(model.needingAttention.first)
+        #expect(model.needsAttention(1) && model.task(1)?.title == "Renew passport (urgent)", "showing the Mac's version")
+        #expect(model.notice?.isError == true)
+        guard case .update(_, _, _, let mine) = change.kind, case .conflict(let theirs) = change.state else {
+            Issue.record("expected a conflicted edit")
+            return
+        }
+        #expect(mine == TaskPatch(title: "Renew passport this week", notes: "My notes"), "my versions are kept")
+        #expect(ConflictText.who(theirs) == "Claude Code · passport")
+        #expect(ConflictText.fields(mine) == "title and notes")
+        #expect(FieldText.value(.title, in: mine) == "Renew passport this week")
+        #expect(SyncText.status(model).contains("1 needs your decision"))
+
+        // A later change to the same task waits behind the decision.
+        await model.addComment(1, "After the conflict")
+        #expect(model.waiting.count == 1 && mac.task(1)?.commentCount == 0)
+
+        // I take the Mac's title and keep both sets of notes.
+        let resolved = ConflictText.resolved(mine: mine, theirs: theirs, choices: [.title: .theirs, .notes: .both])
+        #expect(resolved == TaskPatch(notes: "Claude’s notes\n\nMy notes"))
+        await model.resolveEdit(change, keeping: resolved)
+        #expect(model.changes.isEmpty)
+        #expect(mac.task(1)?.title == "Renew passport (urgent)" && mac.task(1)?.notes == "Claude’s notes\n\nMy notes")
+        #expect(mac.task(1)?.commentCount == 1, "and the change that was waiting behind it went too")
+    }
+
+    @Test("a change to a task that was deleted on the Mac is kept, and the task can be put back")
+    func deletedOnMac() async throws {
+        defer { cleanUp() }
+        mac.add("Trip checklist") { $0.subtasks = [Subtask(id: 1, title: "Passport", done: false)] }
+        let model = await paired()
+        mac.delete(1)
+        await model.update(1, TaskPatch(notes: "Don’t forget the adapter", priority: .high))
+        let change = try #require(model.needingAttention.first)
+        #expect(model.title(for: change) == "Trip checklist")
+        #expect(model.tasks.isEmpty)
+
+        await model.restoreTask(for: change)
+        #expect(model.changes.isEmpty)
+        let restored = try #require(mac.all.first)
+        #expect(restored.title == "Trip checklist" && restored.notes == "Don’t forget the adapter" && restored.priority == .high)
+        #expect(restored.subtasks.map(\.title) == ["Passport"])
+        #expect(model.tasks.map(\.title) == ["Trip checklist"])
+    }
+
+    @Test("giving a change up is something only I can do")
+    func discarding() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport")
+        let model = await paired()
+        mac.isUnreachable = true
+        await model.update(1, TaskPatch(title: "Never mind"))
+        let change = try #require(model.waiting.first)
+        await model.discard(change)
+        #expect(model.changes.isEmpty && model.task(1)?.title == "Renew passport")
+        mac.isUnreachable = false
+        await model.retry()
+        #expect(mac.task(1)?.title == "Renew passport")
+    }
+
+    // MARK: Connection
+
+    @Test("a live update reloads the list only when the Mac's version has moved on, and sends what was waiting")
+    func liveUpdates() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport")
+        let model = await paired()
+        let before = mac.requests.count
+
+        live.yield(.live(version: mac.version)) // the version the list already has
+        #expect(await eventually { model.isLive })
+        #expect(mac.requests.count == before, "nothing to fetch")
+
+        mac.add("Added on the Mac")
+        mac.edit(1) { $0.title = "Renew passport today" }
+        live.yield(.changed(version: mac.version))
+        #expect(await eventually { model.tasks.count == 2 })
+        #expect(model.task(1)?.title == "Renew passport today")
+
+        // The connection drops; a change is made; the connection comes back.
         live.yield(.waiting(.todosNotRunning, retryIn: 1))
         #expect(await eventually { model.issue == .todosNotRunning })
-        #expect(model.isLive == false)
-        #expect(model.tasks.count == 1, "the list stays on screen")
-
-        live.yield(.live(version: 3))
-        #expect(await eventually { model.issue == nil && model.isLive })
-
-        live.yield(.stopped(.unauthorized))
-        #expect(await eventually { model.issue == .tokenRevoked })
+        #expect(model.isLive == false && model.tasks.count == 2, "the list stays on screen")
+        mac.isUnreachable = true
+        await model.complete(2)
+        #expect(model.waiting.count == 1)
+        mac.isUnreachable = false
+        live.yield(.live(version: mac.version))
+        #expect(await eventually { model.waiting.isEmpty && model.issue == nil })
+        #expect(mac.task(2)?.status == .done)
     }
 
-    @Test("a revoked token is reported as such, and the list stays on screen")
+    @Test("a revoked token is reported, changes keep waiting, and pairing again sends them")
     func revoked() async throws {
-        defer { try? store.clear() }
+        defer { cleanUp() }
+        mac.add("Renew passport")
         let model = await paired()
-        hub.reply(401, #"{"error":{"code":"unauthorized","message":"That access token is not valid."}}"#)
-        await model.refresh()
-        #expect(model.issue == .tokenRevoked)
-        #expect(model.issue?.needsPairing == true)
-        #expect(model.tasks.count == 1)
+        mac.tokenRevoked = true
+        await model.update(1, TaskPatch(title: "Changed while signed out"))
+        #expect(model.issue == .tokenRevoked && model.issue?.needsPairing == true)
+        #expect(model.waiting.count == 1 && model.tasks.count == 1, "the list and the change are both still here")
+
+        await model.unpair(erasingData: false) // "Pair Again"
+        #expect(model.phase == .unpaired && model.tasks.isEmpty)
+        #expect(try keychain.load() == nil)
+
+        mac.tokenRevoked = false
+        #expect(await model.pair(credentials) == nil)
+        #expect(model.waiting.isEmpty)
+        #expect(mac.task(1)?.title == "Changed while signed out")
+    }
+
+    @Test("unpairing removes the token, the copy of the list and anything still waiting")
+    func unpairing() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport")
+        let model = await paired()
+        mac.isUnreachable = true
+        await model.capture("Lost on purpose")
+        await model.unpair(erasingData: true)
+        #expect(model.phase == .unpaired && model.tasks.isEmpty && model.changes.isEmpty)
+        #expect(try keychain.load() == nil)
+
+        let relaunched = launch()
+        await relaunched.start()
+        #expect(relaunched.phase == .unpaired)
+        mac.isUnreachable = false
+        #expect(await relaunched.pair(credentials) == nil)
+        #expect(relaunched.changes.isEmpty && mac.all.map(\.title) == ["Renew passport"], "nothing left over was sent")
+    }
+
+    @Test("a different Mac never sees the first one's list or waiting changes")
+    func separateMacs() async throws {
+        defer { cleanUp() }
+        mac.add("On the first Mac")
+        let model = await paired()
+        mac.isUnreachable = true
+        await model.capture("For the first Mac")
+        await model.unpair(erasingData: false)
+
+        let other = FakeMac()
+        other.add("On the second Mac")
+        let second = AppModel(credentials: keychain, makeClient: { other.client($0) }, liveStates: { [channel] _ in channel.stream }, dataDirectory: directory)
+        await second.start()
+        #expect(await second.pair(try HubCredentials(address: HubAddress("other-mac.tail1234.ts.net"), token: "another-token")) == nil)
+        #expect(second.tasks.map(\.title) == ["On the second Mac"])
+        #expect(second.changes.isEmpty && other.all.count == 1)
     }
 }
