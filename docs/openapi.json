@@ -3,7 +3,7 @@
   "info": {
     "title": "Todos API",
     "version": "1",
-    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**On the Mac itself.** While the app runs, the same API is also served on a Unix domain socket that only your user can open: `~/Library/Application Support/Todos/todos.sock` (or `TODOS_SOCKET`). There it needs no token, and it is there whether Remote Access is on or off. This is how the `todos` command reaches the app. A few operations exist only on the socket, and a few only at the network address; each says so, and is marked `x-todos-only-on` (`socket` or `port`). Where an operation is not served, its path is answered exactly like one that does not exist.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible in the app on the Mac itself.\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision, and `GET /info` adds how old a client may be. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
+    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**On the Mac itself.** While the app runs, the same API is also served on a Unix domain socket that only your user can open: `~/Library/Application Support/Todos/todos.sock` (or `TODOS_SOCKET`). There it needs no token, and it is there whether Remote Access is on or off. This is how the `todos` command reaches the app. A few operations exist only on the socket, and a few only at the network address; each says so, and is marked `x-todos-only-on` (`socket` or `port`). Where an operation is not served, its path is answered exactly like one that does not exist.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible on the Mac itself: in the app, or from the `todos` command through the local socket (`/tasks/{id}/claude-session`).\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision, and `GET /info` adds how old a client may be. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
   },
   "servers": [
     {
@@ -44,6 +44,9 @@
     },
     {
       "name": "Session"
+    },
+    {
+      "name": "Start with Claude"
     }
   ],
   "paths": {
@@ -1947,6 +1950,181 @@
           },
           "403": {
             "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}/claude-session": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Task id."
+        }
+      ],
+      "get": {
+        "tags": [
+          "Start with Claude"
+        ],
+        "summary": "What would a Claude session on this task be started with?",
+        "description": "Only on the local socket. Returns exactly what the app's own **Start with Claude** button uses, for a program on the Mac that starts the session itself: run `claude <args...> -- <prompt>` in `folder`.\n\nAt the network address this path does not exist: starting a Claude session, and where folders are on the Mac, stay on the Mac.",
+        "x-todos-only-on": "socket",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "What to start the session with.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "prompt",
+                    "folder",
+                    "args",
+                    "claude"
+                  ],
+                  "properties": {
+                    "prompt": {
+                      "type": "string",
+                      "description": "The opening message for the session."
+                    },
+                    "folder": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Full path of the folder Claude should work in: the one the app remembers for the task's project, if it still exists. Null when the app would ask (no project, or no folder chosen for it yet)."
+                    },
+                    "args": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The options to give `claude` before `--` and the prompt, e.g. `[\"--name\", \"Todo #12: Fix login\", \"--allowedTools\", \"mcp__todolist\"]`."
+                    },
+                    "claude": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Where the app found the `claude` command on this Mac, or null if it found none."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused: the request carried reverse-proxy headers. Nothing relayed is answered on the local socket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Start with Claude"
+        ],
+        "summary": "Record that a Claude session was started on this task",
+        "description": "Only on the local socket. Does what the app does after its own button has started a session: assigns the task to Claude, adds \"Started with Claude from terminal\" to its activity (naming the folder if one is sent), and remembers that folder for the task's project, so the app and the next `GET` suggest it. Send it once the session has been started.",
+        "x-todos-only-on": "socket",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "folder": {
+                    "type": "string",
+                    "description": "Full path of the existing folder the session was started in."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The task, now assigned to Claude.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused: the request carried reverse-proxy headers. Nothing relayed is answered on the local socket.",
             "content": {
               "application/json": {
                 "schema": {

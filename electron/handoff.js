@@ -7,96 +7,42 @@
 //   terminal  an interactive `claude` session in Terminal, which starts on the
 //             prompt right away and asks before acting, like one started by hand.
 //             Only the todo tools are pre-approved.
+//
+// What a session is started with, and what is recorded once it has been, come
+// from src/claude-session.js. The `todos` command gets exactly the same through
+// the local socket and runs `claude` itself. This file is the part only the
+// desktop app does: choosing the folder and opening the session.
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-
-const HOME = os.homedir();
-
-export const tildify = (p) => (p === HOME || p.startsWith(HOME + path.sep) ? `~${p.slice(HOME.length)}` : p);
-
-function isExecutable(file) {
-  try {
-    fs.accessSync(file, fs.constants.X_OK);
-    return fs.statSync(file).isFile();
-  } catch {
-    return false;
-  }
-}
-
-// Newest copy of the CLI that the Claude desktop app keeps for its own use.
-function bundledClaude() {
-  const root = path.join(HOME, 'Library', 'Application Support', 'Claude', 'claude-code');
-  const found = [];
-  const walk = (dir, depth) => {
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory() && depth < 6) walk(full, depth + 1);
-      else if (entry.name === 'claude' && isExecutable(full)) found.push(full);
-    }
-  };
-  walk(root, 0);
-  // Paths look like .../claude-code/2.1.295/<build>/claude.app/...; compare by version.
-  const byVersion = (a, b) => a.localeCompare(b, undefined, { numeric: true });
-  return found.sort(byVersion).pop() || null;
-}
-
-// Where the `claude` command lives: the usual install locations first, then the desktop app's copy.
-// Set TODOS_CLAUDE_BIN to point at a specific one.
-export function findClaude() {
-  if (process.env.TODOS_CLAUDE_BIN) return isExecutable(process.env.TODOS_CLAUDE_BIN) ? process.env.TODOS_CLAUDE_BIN : null;
-  const candidates = [
-    path.join(HOME, '.local', 'bin', 'claude'),
-    path.join(HOME, '.claude', 'local', 'claude'),
-    '/opt/homebrew/bin/claude',
-    '/usr/local/bin/claude',
-  ];
-  return candidates.find(isExecutable) || bundledClaude();
-}
-
-// The opening message for the session. The todolist tools carry the rest of the
-// instructions (how to report progress), so this stays short.
-export function promptFor(todo) {
-  return [
-    `Work on task #${todo.id} from my todo list: ${todo.title}`,
-    '',
-    `Start by calling todo_get for #${todo.id} to read its notes and subtasks. Keep the todo updated as you go: `
-      + 'mark it in progress, check off subtasks as you finish them, and leave short progress comments. '
-      + 'When the work is finished, mark it done with a comment saying what you did. '
-      + 'If you need a decision or anything else from me, mark it blocked and say what you need in a comment.',
-  ].join('\n');
-}
+import { createSessions, sessionFor, tildify } from '../src/claude-session.js';
 
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 // Starts the session. `workDir` is where launcher files are kept (inside the app's
 // data folder). Resolves once Terminal has been asked to open; rejects with a
 // message suitable for showing to the user.
-export function startInTerminal({ todo, folder, workDir }) {
-  const claude = findClaude();
+export function startInTerminal({ todo, session, workDir }) {
+  const { claude, folder } = session;
   if (!claude) {
     return Promise.reject(new Error('Could not find the claude command. Install Claude Code, or open the Claude desktop app once so it sets up its copy.'));
   }
   fs.mkdirSync(workDir, { recursive: true });
   const base = path.join(workDir, `todo-${todo.id}`);
   // The task text goes through files, never through the script itself, so nothing
-  // in a title or prompt can be interpreted by the shell.
-  fs.writeFileSync(`${base}.prompt.txt`, promptFor(todo));
-  fs.writeFileSync(`${base}.name.txt`, `Todo #${todo.id}: ${todo.title}`.slice(0, 80));
+  // in a title or prompt can be interpreted by the shell. Every argument is read
+  // back from a file of its own.
+  const fromFile = (name, text) => {
+    const file = `${base}.${name}.txt`;
+    fs.writeFileSync(file, text);
+    return `"$(cat ${shellQuote(file)})"`;
+  };
   const script = [
     '#!/bin/zsh',
     `# Started by Todos for task #${todo.id}.`,
     `cd ${shellQuote(folder)} || { echo "Folder not found: ${tildify(folder).replace(/["$\`\\]/g, '')}"; exit 1; }`,
-    // --allowedTools lets the session update the todo list without asking; everything else still asks.
-    `exec ${shellQuote(claude)} --name "$(cat ${shellQuote(`${base}.name.txt`)})" --allowedTools mcp__todolist -- "$(cat ${shellQuote(`${base}.prompt.txt`)})"`,
+    `exec ${shellQuote(claude)} ${session.args.map((arg, i) => fromFile(`arg${i}`, arg)).join(' ')} -- ${fromFile('prompt', session.prompt)}`,
     '',
   ].join('\n');
   const launcher = `${base}.command`;
@@ -115,8 +61,8 @@ export function startInTerminal({ todo, folder, workDir }) {
 
 // Opens the Claude desktop app on a new Code session with the folder and prompt
 // filled in. Rejects if no app handles claude:// links.
-export function startInDesktop({ todo, folder }) {
-  const url = `claude://code/new?folder=${encodeURIComponent(folder)}&q=${encodeURIComponent(promptFor(todo))}`;
+export function startInDesktop({ session }) {
+  const url = `claude://code/new?folder=${encodeURIComponent(session.folder)}&q=${encodeURIComponent(session.prompt)}`;
   if (process.env.TODOS_HANDOFF_DRY_RUN) return Promise.resolve({ url });
   return new Promise((resolve, reject) => {
     execFile('/usr/bin/open', [url], (err) => {
@@ -124,4 +70,57 @@ export function startInDesktop({ todo, folder }) {
       else resolve({ url });
     });
   });
+}
+
+// What the server is given as `handoff`: the dashboard's "Start with Claude"
+// button (info and start), and the socket's claude-session routes (session and
+// started). The app supplies:
+//   settings       its settings: handoffTarget, projectFolders, lastFolder
+//   saveSettings   writes them
+//   pickFolder     (todo, startAt) asks the user for a folder; resolves to it, or to null if they cancel
+//   workDir        () => where launcher files are kept
+export function createHandoff({ settings, saveSettings, pickFolder, workDir }) {
+  const remembered = (todo) => (todo.project && settings.projectFolders[todo.project]) || null;
+  // The folder remembered for the task's project, as long as it is still there.
+  const folderFor = (todo) => {
+    const folder = remembered(todo);
+    return folder && fs.existsSync(folder) ? folder : null;
+  };
+  const sessions = createSessions({
+    folderFor,
+    remember(todo, folder) {
+      if (todo.project) settings.projectFolders[todo.project] = folder;
+      settings.lastFolder = folder;
+      saveSettings();
+    },
+  });
+
+  return {
+    ...sessions,
+
+    // Folders remembered per project and the last-used target, shown next to the button.
+    info() {
+      return {
+        target: settings.handoffTarget,
+        folders: Object.fromEntries(Object.entries(settings.projectFolders).map(([project, folder]) => [project, tildify(folder)])),
+      };
+    },
+
+    // Picks the folder (remembered for the task's project, or asked for), opens the
+    // session there, and marks the task as Claude's.
+    async start(todo, { chooseFolder = false, target = settings.handoffTarget } = {}) {
+      if (target !== 'desktop' && target !== 'terminal') target = 'desktop';
+      let folder = chooseFolder ? null : folderFor(todo);
+      if (!folder) {
+        folder = await pickFolder(todo, remembered(todo) || settings.lastFolder);
+        if (!folder) return { started: false };
+      }
+      const session = sessionFor(todo, folder);
+      if (target === 'terminal') await startInTerminal({ todo, session, workDir: workDir() });
+      else await startInDesktop({ session });
+      settings.handoffTarget = target;
+      sessions.started(todo, { folder, from: target });
+      return { started: true, target, folder: tildify(folder) };
+    },
+  };
 }

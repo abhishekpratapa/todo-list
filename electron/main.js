@@ -12,14 +12,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startServer } from '../src/server.js';
 import {
-  DATA_FILE, PORT, ROOT, dailySummary, dueGroups, load, markReminded, pendingReminders, summarize, today, updateTodo, watchStore,
+  DATA_FILE, PORT, ROOT, dailySummary, dueGroups, load, markReminded, pendingReminders, summarize, today, watchStore,
 } from '../src/store.js';
 import { COOKIE } from '../src/auth.js';
 import { createRemote } from '../src/remote.js';
 import { socketPath } from '../src/socket.js';
 import * as tailscale from '../src/tailscale.js';
 import { showPairing } from './pairing.js';
-import { startInDesktop, startInTerminal, tildify } from './handoff.js';
+import { createHandoff } from './handoff.js';
 
 // TODOS_USER_DATA keeps a second copy (one run from source, or by the tests) apart
 // from the installed app: its own settings, and its own "already running" lock,
@@ -68,48 +68,6 @@ function socketTrouble() {
   if (!dashboard || dashboard.socket) return null;
   return dashboard.socketProblem?.message || 'No place for the socket has a short enough path. Set TODOS_SOCKET to one.';
 }
-
-// ---------- hand off to Claude ----------
-
-// Behind the dashboard's "Start with Claude" button (see src/server.js).
-const handoff = {
-  // Folders remembered per project and the last-used target, shown next to the button.
-  info() {
-    return {
-      target: settings.handoffTarget,
-      folders: Object.fromEntries(Object.entries(settings.projectFolders).map(([project, folder]) => [project, tildify(folder)])),
-    };
-  },
-
-  // Picks the folder (remembered for the task's project, or asked for), opens the
-  // session there, and marks the task as Claude's.
-  async start(todo, { chooseFolder = false, target = settings.handoffTarget } = {}) {
-    if (target !== 'desktop' && target !== 'terminal') target = 'desktop';
-    const remembered = todo.project ? settings.projectFolders[todo.project] : null;
-    let folder = !chooseFolder && remembered && fs.existsSync(remembered) ? remembered : null;
-    if (!folder) {
-      showWindow();
-      const picked = await dialog.showOpenDialog(win, {
-        title: 'Start with Claude',
-        message: `Choose the folder Claude should work in for “${clip(todo.title, 60)}”`,
-        buttonLabel: 'Start Here',
-        defaultPath: remembered || settings.lastFolder || app.getPath('home'),
-        properties: ['openDirectory', 'createDirectory'],
-      });
-      if (picked.canceled || !picked.filePaths[0]) return { started: false };
-      [folder] = picked.filePaths;
-    }
-    if (target === 'terminal') await startInTerminal({ todo, folder, workDir: path.join(app.getPath('userData'), 'handoff') });
-    else await startInDesktop({ todo, folder });
-    if (todo.project) settings.projectFolders[todo.project] = folder;
-    settings.lastFolder = folder;
-    settings.handoffTarget = target;
-    saveSettings();
-    const where = target === 'terminal' ? 'Terminal' : 'the Claude app';
-    updateTodo(todo.id, { assignee: 'claude', comment: `Handed this to Claude in ${tildify(folder)} (${where}).` }, 'me');
-    return { started: true, target, folder: tildify(folder) };
-  },
-};
 
 // ---------- window ----------
 
@@ -226,6 +184,27 @@ function saveSettings() {
     // non-fatal
   }
 }
+
+// ---------- hand off to Claude ----------
+
+// Behind the dashboard's "Start with Claude" button, and behind what the `todos`
+// command asks for on the local socket (see src/server.js and electron/handoff.js).
+const handoff = createHandoff({
+  settings,
+  saveSettings,
+  workDir: () => path.join(app.getPath('userData'), 'handoff'),
+  async pickFolder(todo, startAt) {
+    showWindow();
+    const picked = await dialog.showOpenDialog(win, {
+      title: 'Start with Claude',
+      message: `Choose the folder Claude should work in for “${clip(todo.title, 60)}”`,
+      buttonLabel: 'Start Here',
+      defaultPath: startAt || app.getPath('home'),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return picked.canceled ? null : picked.filePaths[0] || null;
+  },
+});
 
 // ---------- remote access ----------
 

@@ -282,24 +282,36 @@ test('changes through the socket are not rate limited', async () => {
   }
 });
 
+// Makes changes until one is announced on `live`. A server that has only just
+// started may not be watching the data file yet, so one change is not always enough.
+async function changeSeen(live) {
+  live.events.length = 0;
+  for (let i = 0; i < 10 && !live.events.includes('change'); i++) {
+    store.createTodo({ title: `Seen live ${i}` }, 'me');
+    await live.sawEvent('change', 300);
+  }
+  return live.events.includes('change');
+}
+
 test('live updates work on the socket, and outlast a token rotation and switching remote access off', async () => {
   const s = await boot({ socket: true });
   const viaSocket = await s.stream(s.sock, '/api/v1/events');
   const viaTailnet = await s.stream(s.tailnet, '/api/v1/events', s.bearer());
-  assert.equal(viaSocket.status, 200);
-  assert.ok(await viaSocket.sawEvent('hello'));
-  store.createTodo({ title: 'Seen live' }, 'me');
-  assert.ok(await viaSocket.sawEvent('change'));
+  try {
+    assert.equal(viaSocket.status, 200);
+    assert.ok(await viaSocket.sawEvent('hello'));
+    assert.ok(await changeSeen(viaSocket));
 
-  s.remote.rotate();
-  assert.ok(await viaTailnet.closedByServer(), 'another device is dropped, as before');
-  s.remote.setEnabled(false);
-  assert.equal(await viaSocket.closedByServer(300), false, 'the socket\'s connection never depended on either');
-  viaSocket.events.length = 0;
-  store.createTodo({ title: 'Still seen live' }, 'me');
-  assert.ok(await viaSocket.sawEvent('change'));
-  viaSocket.close();
-  s.close();
+    s.remote.rotate();
+    assert.ok(await viaTailnet.closedByServer(), 'another device is dropped, as before');
+    s.remote.setEnabled(false);
+    assert.equal(await viaSocket.closedByServer(300), false, 'the socket\'s connection never depended on either');
+    assert.ok(await changeSeen(viaSocket));
+  } finally {
+    viaSocket.close();
+    viaTailnet.close();
+    s.close();
+  }
 });
 
 // ---------- the health check, on both listeners ----------

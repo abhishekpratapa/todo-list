@@ -51,12 +51,14 @@ const alive = (pid) => {
   }
 };
 
-// One request to the app over its socket. Resolves to { status, body }, or null if nothing answers.
-export function ask(socketPath, method, pathname, body) {
+// One request to the app: over its socket, given the socket's path, or to its port,
+// given PORT. Resolves to { status, body }, or null if nothing answers.
+export function ask(to, method, pathname, body) {
   return new Promise((resolve) => {
     const payload = body === undefined ? undefined : JSON.stringify(body);
-    const headers = { host: 'todos', ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}) };
-    const req = http.request({ socketPath, method, path: pathname, headers, agent: false }, (res) => {
+    const headers = payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {};
+    const where = typeof to === 'number' ? { host: '127.0.0.1', port: to } : { socketPath: to, headers: { host: 'todos', ...headers } };
+    const req = http.request({ headers, ...where, method, path: pathname, agent: false }, (res) => {
       let text = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { text += c; });

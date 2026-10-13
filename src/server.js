@@ -26,6 +26,7 @@ import { parseQuickAdd } from './quickadd.js';
 import { COOKIE, bearerToken, parseCookies, rateLimiter } from './auth.js';
 import { json, readJson } from './http.js';
 import { createV1, health } from './api-v1.js';
+import { createSessions } from './claude-session.js';
 import { listenOnSocket, socketPath as defaultSocketPath } from './socket.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -86,7 +87,9 @@ const cleanLabel = (v) => String(v || '').replace(/[^\w .,()'’-]/g, '').trim()
 //
 // `handoff` is supplied by the desktop app: { start(todo, options), info() }. It
 // starts a Claude session on a task; without it (plain `npm start`) the dashboard
-// hides the button and the endpoint answers 501.
+// hides the button and the endpoint answers 501. It also carries { session(todo),
+// started(todo, options) } for the socket's claude-session routes (see
+// claude-session.js); without the app those work too, with no folder to suggest.
 //
 // `remote` is the remote-access state from createRemote(). Without it, or while
 // it is disabled, there is no sign-in and nothing new is served.
@@ -259,7 +262,7 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
     return ctx.session.kind === 'api' ? 'API on this Mac' : 'browser on this Mac';
   }
 
-  const v1 = createV1({ remote, openStream, viaLabel });
+  const v1 = createV1({ remote, openStream, viaLabel, sessions: handoff?.session && handoff?.started ? handoff : createSessions() });
 
   // ---------- routes ----------
 

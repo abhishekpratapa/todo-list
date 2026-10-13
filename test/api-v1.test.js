@@ -417,9 +417,11 @@ test('bad input is refused with a clear, consistently shaped error', async () =>
 
 test('nothing that runs programs or reveals local paths exists in the API', async () => {
   const { task } = (await api('POST', '/tasks', { body: { title: 'Hand me off' } })).body;
-  for (const p of [`/tasks/${task.id}/handoff`, '/handoff', '/settings', '/token', '/files']) {
+  for (const p of [`/tasks/${task.id}/handoff`, `/tasks/${task.id}/claude-session`, '/handoff', '/settings', '/token', '/files']) {
     assert.equal((await api('POST', p, { body: {} })).status, 404, p);
   }
+  // What the command-line client asks the local socket for is not here either.
+  assert.equal((await api('GET', `/tasks/${task.id}/claude-session`)).status, 404);
   const everything = JSON.stringify([(await api('GET', '/tasks?status=all')).body, (await api('GET', '/summary')).body, (await api('GET', '/due')).body, (await api('GET', '/session')).body, (await api('GET', '/meta')).body]);
   assert.equal(everything.includes(process.env.TODO_DATA_FILE), false, 'no data file path');
   assert.equal(everything.includes(s.remote.token), false, 'no token');

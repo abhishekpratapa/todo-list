@@ -169,6 +169,20 @@ function listTasks(q) {
   return { tasks: matching.slice(offset, offset + limit).map(brief), total: matching.length, summary: summarize(all), version: db.version };
 }
 
+// The folder a session was started in, as the command-line client reports it:
+// an existing folder, by its full path. Null when it didn't say.
+function startedIn(folder) {
+  if (folder === undefined || folder === null) return null;
+  let found = false;
+  try {
+    found = typeof folder === 'string' && path.isAbsolute(folder) && fs.statSync(folder).isDirectory();
+  } catch {
+    // not there, or not readable
+  }
+  if (!found) throw new RequestError(400, 'invalid', '"folder" must be the full path of an existing folder.');
+  return path.resolve(folder);
+}
+
 function subtaskOf(taskId, subtaskId) {
   const task = getTodo(taskId);
   if (!task.subtasks.some((s) => s.id === Number(subtaskId))) throw new NotFoundError(`Task #${task.id} has no subtask ${subtaskId}`);
@@ -177,7 +191,8 @@ function subtaskOf(taskId, subtaskId) {
 
 // ---------- routes ----------
 
-export function createV1({ remote, openStream, viaLabel }) {
+// `sessions` is Start with Claude as src/claude-session.js makes it: { session, started }.
+export function createV1({ remote, openStream, viaLabel, sessions }) {
   // What every change records: who it came through, and its idempotency key if it has one.
   const write = async (req, ctx) => ({ key: idempotencyKey(req), via: await viaLabel(req, ctx) });
 
@@ -269,6 +284,17 @@ export function createV1({ remote, openStream, viaLabel }) {
       const { activity } = getTodo(params.id);
       return json(res, 200, { activity: kind ? activity.filter((a) => a.kind === kind) : activity });
     }],
+
+    // Start with Claude, for the `todos` command: what the app's own button would
+    // start a session with, and the note in the task once the command has started
+    // one. Only on the socket. The answer says where folders are on this Mac, and
+    // it is for a program that goes on to run `claude` here.
+    ['GET', '/tasks/{id}/claude-session', ({ res, params }) => json(res, 200, sessions.session(getTodo(params.id))), 'socket'],
+    ['POST', '/tasks/{id}/claude-session', async ({ req, res, ctx, params }) => {
+      const body = req.headers['content-length'] > 0 ? only(await readJson(req, ctx.bodyLimit), ['folder']) : {};
+      const folder = startedIn(body.folder);
+      return sendTask(res, 200, sessions.started(getTodo(params.id), { folder, ...(await write(req, ctx)) }).todo);
+    }, 'socket'],
 
     // Quick capture: one line, parsed exactly as the app's capture box and add bar parse it.
     // Takes JSON { "text": "...", "at"?: when it was typed } or the bare line as text/plain.
