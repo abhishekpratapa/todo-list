@@ -238,7 +238,12 @@ async function refreshRemote() {
   remoteInfo = next;
   if (changed) buildMenu();
   if (changed && process.env.TODOS_DEBUG) console.log(`remote access: ${remoteStatusLine()}`);
+  // A new address can take up to a minute to answer the first time, while Tailscale
+  // gets its certificate. Look again soon instead of waiting for the regular check.
+  clearTimeout(recheck);
+  if (next.mapped && next.reachable === false) recheck = setTimeout(refreshRemote, 10_000);
 }
+let recheck = null;
 
 function remoteStatusLine() {
   if (!settings.remoteAccess) return 'Off';
@@ -249,7 +254,7 @@ function remoteStatusLine() {
   if (!ts.running) return 'Tailscale isn’t running';
   if (!mapped) return ts.httpsEnabled ? 'Not set up yet: choose Set Up Tailscale Serve' : 'HTTPS isn’t enabled for your tailnet yet';
   if (funnel) return 'Warning: Tailscale Funnel is on for this address';
-  if (reachable === false) return 'Set up, but the address isn’t answering';
+  if (reachable === false) return 'Set up. Waiting for the address to answer…';
   return `On at ${url.replace('https://', '')}`;
 }
 
@@ -293,8 +298,9 @@ async function setUpServe() {
     type: 'info',
     buttons: ['Copy Address', 'OK'],
     defaultId: 0,
-    message: remoteInfo.reachable === false ? 'Set up, but the address isn’t answering yet' : 'Tailscale Serve is set up',
-    detail: `On another device, open ${address} and enter your access token (Todos → Remote Access → Copy Access Token).`,
+    message: 'Tailscale Serve is set up',
+    detail: `On another device, open ${address} and enter your access token (Todos → Remote Access → Copy Access Token).`
+      + (remoteInfo.reachable === false ? '\n\nThe address isn’t answering yet. The first time, Tailscale can take up to a minute to get its certificate. The Remote Access menu will say “On at …” when it’s ready.' : ''),
   });
   if (done.response === 0) clipboard.writeText(address);
 }
