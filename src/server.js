@@ -8,6 +8,11 @@
 // (see remote.js), `tailscale serve` can relay requests from the user's other
 // devices, and then every request must be authenticated, including local ones,
 // because relayed requests also arrive from 127.0.0.1.
+//
+// Given a `socketPath`, it also listens on a Unix domain socket that only the
+// user can open (see socket.js). That listener serves /health and /api/v1, with
+// no sign-in, whether remote access is on or off. It is how the `todos` command
+// reaches the app on this Mac, and the only place local-only routes are served.
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -20,7 +25,8 @@ import {
 import { parseQuickAdd } from './quickadd.js';
 import { COOKIE, bearerToken, parseCookies, rateLimiter } from './auth.js';
 import { json, readJson } from './http.js';
-import { createV1 } from './api-v1.js';
+import { createV1, health } from './api-v1.js';
+import { listenOnSocket, socketPath as defaultSocketPath } from './socket.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const TYPES = {
@@ -40,7 +46,7 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // sign-in page and its assets, and the icons a phone needs to show a home-screen app.
 const PUBLIC_FILES = new Set(['/login', '/login.js', '/styles.css', '/login.css', '/manifest.webmanifest', '/icons/icon-180.png', '/icons/icon-192.png', '/icons/icon-512.png']);
 const isPublic = (method, p) =>
-  (method === 'GET' && (PUBLIC_FILES.has(p) || p === '/api/v1/health')) || (method === 'POST' && p === '/api/v1/session');
+  (method === 'GET' && (PUBLIC_FILES.has(p) || p === '/health' || p === '/api/v1/health')) || (method === 'POST' && p === '/api/v1/session');
 
 // Sent on every response while remote access is on.
 const SECURITY_HEADERS = {
@@ -71,7 +77,12 @@ const withoutPort = (host) => host.replace(/:\d+$/, '');
 const cleanLabel = (v) => String(v || '').replace(/[^\w .,()'’-]/g, '').trim().slice(0, 40);
 
 // Starts the server on 127.0.0.1:port (0 = any free port).
-// Resolves to { url, port, close() }; rejects with the listen error (e.g. EADDRINUSE).
+// Resolves to { url, port, socket, socketProblem, close() }; rejects with the
+// listen error (e.g. EADDRINUSE).
+//
+// `socketPath` is where to open the local socket; leave it out for none. Failing
+// to open it does not stop the server: `socket` is then null and `socketProblem`
+// is a SocketError saying why.
 //
 // `handoff` is supplied by the desktop app: { start(todo, options), info() }. It
 // starts a Claude session on a task; without it (plain `npm start`) the dashboard
@@ -79,7 +90,7 @@ const cleanLabel = (v) => String(v || '').replace(/[^\w .,()'’-]/g, '').trim()
 //
 // `remote` is the remote-access state from createRemote(). Without it, or while
 // it is disabled, there is no sign-in and nothing new is served.
-export function startServer({ port = PORT, handoff = null, remote = null } = {}) {
+export function startServer({ port = PORT, handoff = null, remote = null, socketPath = null } = {}) {
   let localHosts = new Set();
   let lastVersion = load().version;
   const streams = new Map(); // open live-update responses -> kind of session that opened them
@@ -222,9 +233,22 @@ export function startServer({ port = PORT, handoff = null, remote = null } = {})
     return ctx;
   }
 
+  // The same decision for the socket. Whoever could open the file is the user, so
+  // there is no sign-in, no Host to check and no browser to guard against. Nothing
+  // relayed is answered here either: if a proxy is ever pointed at the socket
+  // file, what it forwards still gets nothing.
+  function admitLocal(req, res) {
+    if (PROXY_HEADERS.some((h) => h in req.headers)) {
+      json(res, 403, { error: { code: 'forbidden', message: 'Relayed requests are not answered on the local socket.' } });
+      return null;
+    }
+    return { local: true, remote: false, session: { kind: 'local', id: 'socket' }, proxied: false, secure: false, ip: 'local', bodyLimit: 1_000_000 };
+  }
+
   // The label recorded with a change so the activity log can say where it came
   // from. Undefined for the Mac app itself, which stays unlabelled as before.
   async function viaLabel(req, ctx) {
+    if (ctx.local) return cleanLabel(req.headers['x-todos-client']) || 'command line';
     if (!ctx.remote || ctx.session.kind === 'app') return undefined;
     const named = cleanLabel(req.headers['x-todos-client']); // API clients may name themselves
     if (named) return named;
@@ -250,6 +274,11 @@ export function startServer({ port = PORT, handoff = null, remote = null } = {})
   async function route(req, res, ctx, url) {
     const p = url.pathname;
     const isApp = ctx.session?.kind === 'app'; // the Mac app's own windows (or anything local while remote access is off)
+
+    // Says the server is up and what it speaks, to anyone admit() let through. It
+    // needs no sign-in and says nothing about the list. The one route added to what
+    // 1.3.0 served while remote access is off.
+    if (p === '/health' && req.method === 'GET') return json(res, 200, health());
 
     if (ctx.remote) {
       if (p.startsWith('/api/v1/')) return v1(req, res, ctx, url);
@@ -308,35 +337,50 @@ export function startServer({ port = PORT, handoff = null, remote = null } = {})
     sendFile(res, file);
   }
 
-  const server = http.createServer(async (req, res) => {
+  // The socket serves the health check and the versioned API, and nothing else:
+  // no dashboard pages, and none of the dashboard's own routes.
+  async function routeLocal(req, res, ctx, url) {
+    const p = url.pathname;
+    if (p === '/health' && req.method === 'GET') return json(res, 200, health());
+    if (p.startsWith('/api/v1/')) return v1(req, res, ctx, url);
+    return json(res, 404, { error: { code: 'not_found', message: 'No such endpoint.' } });
+  }
+
+  // Answers one request. The two listeners differ only in who they let in
+  // (`admitting`) and what they serve (`routing`).
+  const answer = (admitting, routing) => async (req, res) => {
     let url = null;
     try {
       url = new URL(req.url, 'http://localhost');
     } catch {
       // answered below, after the same checks every request gets
     }
-    const ctx = admit(req, res, url ? url.pathname : '');
+    const ctx = admitting(req, res, url ? url.pathname : '');
     if (!ctx) return;
+    if (!url && ctx.local) return json(res, 400, { error: { code: 'bad_request', message: 'Bad request' } });
     if (!url) return json(res, ctx.remote ? 400 : 500, { error: ctx.remote ? 'Bad request' : 'Internal error' });
     try {
-      await route(req, res, ctx, url);
+      await routing(req, res, ctx, url);
     } catch (e) {
       if (res.headersSent) return res.end();
-      if (ctx.remote && e.code === 'too_large') {
+      if ((ctx.remote || ctx.local) && e.code === 'too_large') {
         // We stopped reading partway through the upload: answer, then hang up rather
         // than leave a half-read request on a connection that might be reused.
         const { socket } = req;
         res.setHeader('Connection', 'close');
         res.once('finish', () => socket?.destroy());
       }
-      if (url.pathname.startsWith('/api/v1/')) return v1.fail(res, e);
+      if (ctx.local || url.pathname.startsWith('/api/v1/')) return v1.fail(res, e);
       if (e instanceof ConflictError) return json(res, 409, { error: e.message, code: 'conflict', current: e.current });
       if (e instanceof NotFoundError) return json(res, 404, { error: e.message });
       if (e instanceof TodoError) return json(res, 400, { error: e.message });
       console.error(e);
       json(res, 500, { error: 'Internal error' });
     }
-  });
+  };
+
+  const server = http.createServer(answer(admit, route));
+  const local = socketPath ? http.createServer(answer(admitLocal, routeLocal)) : null;
 
   // Tighter time limits while other devices can connect; Node's defaults otherwise.
   function applyLimits() {
@@ -346,11 +390,12 @@ export function startServer({ port = PORT, handoff = null, remote = null } = {})
   }
 
   // When the setting is switched or the token rotated, live connections from other
-  // devices are dropped. Their pages reconnect and are checked again.
+  // devices are dropped. Their pages reconnect and are checked again. Ones on the
+  // socket never depended on either, so they stay.
   const unsubscribe = remote?.onChange(() => {
     applyLimits();
     for (const [res, kind] of streams) {
-      if (kind !== 'app') {
+      if (kind !== 'app' && kind !== 'local') {
         streams.delete(res);
         res.end();
       }
@@ -363,8 +408,10 @@ export function startServer({ port = PORT, handoff = null, remote = null } = {})
     clearInterval(heartbeat);
     for (const res of streams.keys()) res.end();
     streams.clear();
-    server.close();
-    server.closeAllConnections?.();
+    for (const listener of [server, local]) {
+      listener?.close(); // for the socket, this also removes its file
+      listener?.closeAllConnections?.();
+    }
   }
 
   return new Promise((resolve, reject) => {
@@ -372,11 +419,13 @@ export function startServer({ port = PORT, handoff = null, remote = null } = {})
       close();
       reject(e);
     });
-    server.listen(port, '127.0.0.1', () => {
+    server.listen(port, '127.0.0.1', async () => {
       const actual = server.address().port;
       localHosts = new Set([`127.0.0.1:${actual}`, `localhost:${actual}`]);
       applyLimits();
-      resolve({ url: `http://127.0.0.1:${actual}`, port: actual, close });
+      // The socket comes second, so a copy that could not get its port never touches it.
+      const socketProblem = local ? await listenOnSocket(local, socketPath).then(() => null, (e) => e) : null;
+      resolve({ url: `http://127.0.0.1:${actual}`, port: actual, socket: local && !socketProblem ? socketPath : null, socketProblem, close });
     });
   });
 }
@@ -391,10 +440,20 @@ const isMain = (() => {
   }
 })();
 if (isMain) {
-  startServer().then(
-    ({ url }) => {
+  // Run this way, the local socket is only opened when TODOS_SOCKET says where, so
+  // a development server never takes the app's own socket by accident.
+  startServer({ socketPath: process.env.TODOS_SOCKET ? defaultSocketPath() : null }).then(
+    ({ url, socket, socketProblem, close }) => {
       console.log(`Todo dashboard running at ${url}`);
       console.log(`Data file: ${DATA_FILE}`);
+      if (socket) console.log(`Local socket: ${socket}`);
+      if (socketProblem) console.error(`No local socket: ${socketProblem.message}`);
+      // Closing removes the socket file, so stopping with Ctrl-C leaves nothing behind.
+      const stop = () => {
+        close();
+        process.exit(0);
+      };
+      if (socket) for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, stop);
     },
     (e) => {
       if (e.code === 'EADDRINUSE') {

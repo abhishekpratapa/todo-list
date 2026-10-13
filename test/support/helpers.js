@@ -1,6 +1,7 @@
 // Test support: a throwaway data directory, and helpers that talk to a server the
-// way a client on this Mac would, or a device relayed by `tailscale serve` would.
-// Nothing here touches the real data file.
+// way a client on this Mac would, a device relayed by `tailscale serve` would, or
+// the command-line client would over the local socket. Nothing here touches the
+// real data file, the real port or the real socket.
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -16,6 +17,14 @@ export const store = await import('../../src/store.js');
 const { startServer } = await import('../../src/server.js');
 const { createRemote } = await import('../../src/remote.js');
 
+// Socket paths have to be short (see src/socket.js). The temp folder usually is;
+// where it isn't, sockets go in a folder of their own under /tmp instead.
+const { SOCKET_PATH_MAX } = await import('../../src/socket.js');
+export const socketDir = Buffer.byteLength(path.join(tmp, 'sock-000.sock')) <= SOCKET_PATH_MAX
+  ? tmp
+  : fs.realpathSync(fs.mkdtempSync('/tmp/todos-test-'));
+if (socketDir !== tmp) process.on('exit', () => fs.rmSync(socketDir, { recursive: true, force: true }));
+
 export const TAILNET = 'test-mac.example.ts.net';
 export const OWNER = 'owner@example.com';
 export const PHONE_IP = '100.64.0.2';
@@ -23,9 +32,11 @@ export const PHONE_IP = '100.64.0.2';
 const isWrite = (method) => !['GET', 'HEAD', 'OPTIONS'].includes(method);
 let counter = 0;
 
-// Sends one HTTP request to 127.0.0.1:port with exactly the given headers.
+// Sends one HTTP request with exactly the given headers, to 127.0.0.1:port or,
+// given a path instead of a port number, to the Unix socket there.
 // Resolves to { status, headers, body } where body is parsed JSON when the response is JSON.
-export function send(port, method, pathname, { headers = {}, body } = {}) {
+const target = (to) => (typeof to === 'number' ? { host: '127.0.0.1', port: to } : { socketPath: to });
+export function send(to, method, pathname, { headers = {}, body } = {}) {
   const sent = Object.fromEntries(Object.entries(headers).filter(([, v]) => v !== undefined));
   let payload = body;
   if (body !== undefined && typeof body !== 'string' && !Buffer.isBuffer(body)) {
@@ -35,7 +46,7 @@ export function send(port, method, pathname, { headers = {}, body } = {}) {
   if (payload !== undefined) sent['content-length'] = Buffer.byteLength(payload);
   return new Promise((resolve, reject) => {
     // agent: false gives every request its own connection, so one test's leftovers can't affect the next.
-    const req = http.request({ host: '127.0.0.1', port, method, path: pathname, headers: sent, setHost: false, agent: false }, (res) => {
+    const req = http.request({ ...target(to), method, path: pathname, headers: sent, setHost: false, agent: false }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
@@ -50,16 +61,18 @@ export function send(port, method, pathname, { headers = {}, body } = {}) {
 }
 
 // Starts a server on a free port. With `remote: false` it gets no remote-access
-// state at all, like plain `npm start`.
-export async function boot({ enabled = true, requireOwner = true, handoff = null, remote: withRemote = true } = {}) {
+// state at all, like plain `npm start`. With `socket: true` it also listens on a
+// local socket of its own; a string says exactly where.
+export async function boot({ enabled = true, requireOwner = true, handoff = null, remote: withRemote = true, socket = false } = {}) {
   const tokenFile = path.join(tmp, `token-${++counter}`);
+  const socketPath = socket === true ? path.join(socketDir, `sock-${counter}.sock`) : socket || null;
   const remote = withRemote ? createRemote({ tokenFile, enabled, requireOwner }) : null;
   if (remote) {
     remote.hosts.add(TAILNET);
     remote.ownerLogin = OWNER;
     remote.deviceName = async (ip) => (ip === PHONE_IP ? 'Test iPhone' : null);
   }
-  const server = await startServer({ port: 0, handoff, remote });
+  const server = await startServer({ port: 0, handoff, remote, socketPath });
   const { port } = server;
   const localHost = `127.0.0.1:${port}`;
 
@@ -84,6 +97,10 @@ export async function boot({ enabled = true, requireOwner = true, handoff = null
       },
     });
 
+  // The command-line client: straight to the socket, with no token, cookie or Origin.
+  // Go's HTTP client still sends a Host, so this does too; the server ignores it.
+  const sock = (method, p, { headers = {}, ...rest } = {}) => send(socketPath, method, p, { ...rest, headers: { host: 'todos', ...headers } });
+
   // Signs in with the access token and returns the Cookie header value to send back.
   async function signIn(as = tailnet) {
     const res = await as('POST', '/api/v1/session', { body: { token: remote.token } });
@@ -100,8 +117,8 @@ export async function boot({ enabled = true, requireOwner = true, handoff = null
     return new Promise((resolve, reject) => {
       const base = as === tailnet
         ? { host: TAILNET, 'x-forwarded-host': TAILNET, 'x-forwarded-proto': 'https', 'x-forwarded-for': PHONE_IP, 'tailscale-user-login': OWNER }
-        : { host: localHost };
-      const req = http.request({ host: '127.0.0.1', port, method: 'GET', path: pathname, headers: { ...base, ...headers }, setHost: false, agent: false }, (res) => {
+        : { host: as === sock ? 'todos' : localHost };
+      const req = http.request({ ...target(as === sock ? socketPath : port), method: 'GET', path: pathname, headers: { ...base, ...headers }, setHost: false, agent: false }, (res) => {
         const events = [];
         let ended = false;
         let buffer = '';
@@ -136,5 +153,5 @@ export async function boot({ enabled = true, requireOwner = true, handoff = null
     });
   }
 
-  return { remote, tokenFile, port, localHost, local, tailnet, signIn, bearer, appCookie, stream, close: () => server.close() };
+  return { remote, tokenFile, port, localHost, local, tailnet, sock, socketPath, server, signIn, bearer, appCookie, stream, close: () => server.close() };
 }

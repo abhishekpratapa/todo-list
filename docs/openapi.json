@@ -3,7 +3,7 @@
   "info": {
     "title": "Todos API",
     "version": "1",
-    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible in the app on the Mac itself.\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
+    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**On the Mac itself.** While the app runs, the same API is also served on a Unix domain socket that only your user can open: `~/Library/Application Support/Todos/todos.sock` (or `TODOS_SOCKET`). There it needs no token, and it is there whether Remote Access is on or off. This is how the `todos` command reaches the app. A few operations exist only on the socket, and a few only at the network address; each says so, and is marked `x-todos-only-on` (`socket` or `port`). Where an operation is not served, its path is answered exactly like one that does not exist.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible in the app on the Mac itself.\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision, and `GET /info` adds how old a client may be. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
   },
   "servers": [
     {
@@ -90,7 +90,7 @@
           "Session"
         ],
         "summary": "Sign a browser in",
-        "description": "Exchanges the access token for a session cookie (HttpOnly, SameSite=Strict, Secure over HTTPS, 90 days). API clients do not need this: send the bearer token on each request instead.",
+        "description": "Exchanges the access token for a session cookie (HttpOnly, SameSite=Strict, Secure over HTTPS, 90 days). API clients do not need this: send the bearer token on each request instead. Not served on the local socket, where there is nothing to sign in to.",
         "security": [],
         "requestBody": {
           "required": true,
@@ -180,7 +180,8 @@
               }
             }
           }
-        }
+        },
+        "x-todos-only-on": "port"
       },
       "get": {
         "tags": [
@@ -200,9 +201,10 @@
                       "enum": [
                         "remote",
                         "api",
-                        "app"
+                        "app",
+                        "local"
                       ],
-                      "description": "remote: a signed-in browser. api: a bearer token. app: the Mac app's own window."
+                      "description": "remote: a signed-in browser. api: a bearer token. app: the Mac app's own window. local: a program on the Mac using the local socket."
                     }
                   }
                 }
@@ -272,7 +274,9 @@
               }
             }
           }
-        }
+        },
+        "x-todos-only-on": "port",
+        "description": "Not served on the local socket."
       }
     },
     "/meta": {
@@ -281,7 +285,7 @@
           "Session"
         ],
         "summary": "What does this server speak?",
-        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`. Revision 3 (Todos 1.6) added the `Idempotency-Key` header on every change, and `at` on `/capture` and `/capture/preview`.",
+        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`. Revision 3 (Todos 1.6) added the `Idempotency-Key` header on every change, and `at` on `/capture` and `/capture/preview`. Revision 4 added `GET /info` and the local socket.",
         "responses": {
           "200": {
             "description": "The API version and revision, and the app that is serving it.",
@@ -313,6 +317,83 @@
                           "type": "string",
                           "description": "The Todos app version, e.g. \"1.5.0\"."
                         }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/info": {
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "Is this client new enough?",
+        "description": "What the health check at the server's root says, plus the oldest version of each kind of client that still works with this app. A client older than its entry should stop and ask to be updated. A kind of client that is not listed has no minimum.\n\nThe health check itself is `GET /health` at the root of the server (not under `/api/v1`), on the network address and on the local socket. It needs no authentication, and answers `status`, `appVersion` and `apiVersion` only, once the server is ready. At the network address it is answered to requests relayed by Tailscale only while Remote Access is on.",
+        "responses": {
+          "200": {
+            "description": "The app and API versions, and the minimum client versions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "appVersion",
+                    "apiVersion",
+                    "minClientVersions"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "ok"
+                    },
+                    "appVersion": {
+                      "type": "string",
+                      "description": "The Todos app version, e.g. \"1.6.1\"."
+                    },
+                    "apiVersion": {
+                      "type": "object",
+                      "description": "The same two numbers as `api` in `GET /meta`.",
+                      "properties": {
+                        "version": {
+                          "type": "integer",
+                          "description": "Always 1 under /api/v1."
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "description": "Goes up whenever something is added."
+                        }
+                      }
+                    },
+                    "minClientVersions": {
+                      "type": "object",
+                      "description": "Client kind to the oldest version that still works, e.g. `{\"cli\": \"0.1.0\", \"ios\": \"1.0\"}`.",
+                      "additionalProperties": {
+                        "type": "string"
                       }
                     }
                   }

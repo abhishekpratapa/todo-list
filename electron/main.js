@@ -16,18 +16,32 @@ import {
 } from '../src/store.js';
 import { COOKIE } from '../src/auth.js';
 import { createRemote } from '../src/remote.js';
+import { socketPath } from '../src/socket.js';
 import * as tailscale from '../src/tailscale.js';
 import { showPairing } from './pairing.js';
 import { startInDesktop, startInTerminal, tildify } from './handoff.js';
+
+// TODOS_USER_DATA keeps a second copy (one run from source, or by the tests) apart
+// from the installed app: its own settings, and its own "already running" lock,
+// which lives in this folder. It has to be set before the lock is asked for.
+if (process.env.TODOS_USER_DATA) app.setPath('userData', process.env.TODOS_USER_DATA);
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
 
+// `open -g -a Todos --args --background` starts the app with everything running
+// (server, menu bar item, reminders, notifications) but opens no window and
+// leaves whatever app was in front where it is. The command-line client does
+// this when it needs the app and finds it not running.
+const startedInBackground = process.argv.includes('--background');
+const debug = (line) => process.env.TODOS_DEBUG && console.log(line);
+
 let win = null;
 let captureWin = null;
 let tray = null;
 let dashboardUrl = null;
+let dashboard = null; // the running server: { url, port, socket, socketProblem, close() }
 let quitting = false;
 let remote = null; // remote-access state, shared with the server (created once the app is ready)
 let onDefaultPort = true; // false if another program had our port and we fell back to a random one
@@ -36,14 +50,23 @@ let onDefaultPort = true; // false if another program had our port and we fell b
 
 // Prefer the well-known port so the dashboard also works in a browser; if
 // something else holds it, fall back to any free port for the app window.
+// The local socket (see src/socket.js) is opened either way, so the `todos`
+// command reaches the app even when the port had to change.
 async function startDashboard() {
+  const options = { handoff, remote, socketPath: socketPath() };
   try {
-    return await startServer({ port: PORT, handoff, remote });
+    return await startServer({ port: PORT, ...options });
   } catch (e) {
     if (e.code !== 'EADDRINUSE') throw e;
     onDefaultPort = false; // `tailscale serve` points at PORT, so other devices can't reach this one
-    return startServer({ port: 0, handoff, remote });
+    return startServer({ port: 0, ...options });
   }
+}
+
+// Why the `todos` command can't reach this copy of the app, or null if it can.
+function socketTrouble() {
+  if (!dashboard || dashboard.socket) return null;
+  return dashboard.socketProblem?.message || 'No place for the socket has a short enough path. Set TODOS_SOCKET to one.';
 }
 
 // ---------- hand off to Claude ----------
@@ -132,7 +155,10 @@ function createWindow() {
     show: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    win.show();
+    debug('window: shown');
+  });
   win.on('page-title-updated', (e) => e.preventDefault());
   win.on('close', saveBounds);
   win.on('closed', () => {
@@ -767,6 +793,15 @@ function buildMenu() {
 
 // ---------- lifecycle ----------
 
+// With TODOS_DEBUG set, SIGUSR2 prints what is open and whether the app is in
+// front. The app's own tests ask this instead of guessing from the outside.
+if (process.env.TODOS_DEBUG) {
+  const windowState = (w) => (!w || w.isDestroyed() ? 'none' : w.isVisible() ? 'visible' : 'hidden');
+  process.on('SIGUSR2', () => {
+    console.log(`state: ${JSON.stringify({ active: app.isActive(), window: windowState(win), capture: windowState(captureWin), tray: !!tray, socket: dashboard?.socket || null })}`);
+  });
+}
+
 app.setAboutPanelOptions({
   applicationName: 'Todos',
   applicationVersion: app.getVersion(),
@@ -774,13 +809,43 @@ app.setAboutPanelOptions({
 });
 
 // `open -a Todos --args --capture` opens quick capture, so other launchers can trigger it too.
-app.on('second-instance', (_event, argv) => (argv.includes('--capture') ? showCapture() : showWindow()));
+// A second copy started with --background wanted the app running, and it is.
+app.on('second-instance', (_event, argv) => {
+  if (argv.includes('--capture')) showCapture();
+  else if (!argv.includes('--background')) showWindow();
+});
 app.on('before-quit', () => {
   quitting = true;
   globalShortcut.unregisterAll();
 });
+// Stops the server, which also removes the local socket's file.
+app.on('will-quit', () => dashboard?.close());
+
+// macOS sends this when the app is opened while it is already running: a Dock
+// click, Spotlight, `open -a Todos`. It sends the very same thing for `open -g`,
+// which asks for nothing to come to the front, and by then any --args are gone
+// (they only reach a copy that is being started). What tells the two apart is
+// whether the app was made active: an ordinary open activates it just before
+// this arrives, and `open -g` never does. So the window is shown only once the
+// app is active, with a moment's grace in case activation is still on its way.
+let reopening = null;
 app.on('activate', () => {
-  if (dashboardUrl) showWindow();
+  if (!dashboardUrl) return;
+  if (app.isActive()) return showWindow();
+  if (reopening) return;
+  const onActive = () => {
+    clearTimeout(reopening.timer);
+    reopening = null;
+    showWindow();
+  };
+  reopening = {
+    timer: setTimeout(() => {
+      app.removeListener('did-become-active', onActive);
+      reopening = null;
+      debug('reopen: ignored, the app was opened in the background');
+    }, 500),
+  };
+  app.once('did-become-active', onActive);
 });
 app.on('window-all-closed', () => {
   // macOS convention: stay running (server and Dock badge stay live) until Quit.
@@ -796,7 +861,8 @@ app.whenReady().then(async () => {
   });
   remote.deviceName = tailscale.deviceName;
   try {
-    ({ url: dashboardUrl } = await startDashboard());
+    dashboard = await startDashboard();
+    dashboardUrl = dashboard.url;
   } catch (e) {
     dialog.showErrorBox('Todos could not start', `The dashboard server failed to start:\n\n${e.message}`);
     app.quit();
@@ -805,9 +871,11 @@ app.whenReady().then(async () => {
   await giveWindowsTheirCookie(); // before any window loads; harmless while remote access is off
   if (settings.remoteAccess) refreshRemote(); // not awaited: Tailscale may be slow, and the windows don't depend on it
   setInterval(() => settings.remoteAccess && refreshRemote(), 60_000);
+  if (socketTrouble()) console.error(`No local socket for the todos command: ${socketTrouble()}`);
+  debug(`started: pid=${process.pid} background=${startedInBackground} port=${dashboard.port} socket=${dashboard.socket || 'none'}`);
   registerShortcut();
   buildMenu();
-  createWindow();
+  if (!startedInBackground) createWindow(); // otherwise the window waits until the app is opened in the usual way
   createCaptureWindow();
   refreshIndicators();
   watchStore(refreshIndicators);

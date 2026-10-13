@@ -4,7 +4,9 @@
 //
 // Known, intended differences:
 //   - todos carry a new `rev` field (ignored in the comparison);
-//   - a request relayed by a proxy is refused (tested separately below).
+//   - a request relayed by a proxy is refused (tested separately below);
+//   - GET /health, which was a 404 like any unknown page, is the health check
+//     (tested in socket.test.js).
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';

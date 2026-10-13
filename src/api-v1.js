@@ -1,6 +1,7 @@
-// The versioned API for other clients: /api/v1. Only served while remote access
-// is on, and every route except health and sign-in needs a session (see admit()
-// in server.js). Documented in docs/openapi.json.
+// The versioned API for other clients: /api/v1. On the port it is only served
+// while remote access is on, and every route except health and sign-in needs a
+// session (see admit() in server.js). On the local socket it is always served,
+// with no sign-in (see admitLocal() there). Documented in docs/openapi.json.
 //
 // Conventions:
 //   - Errors are always { "error": { "code", "message" } }.
@@ -28,9 +29,20 @@ import {
 //   1  Todos 1.4. Has no /meta: a 404 there means revision 1.
 //   2  Todos 1.5. GET /meta; `version` in GET /tasks.
 //   3  Todos 1.6. Idempotency-Key on every change; `at` on /capture and /capture/preview.
+//   4  The release with the command-line client. GET /info; the whole API on the local
+//      socket (see socket.js), where a few routes exist that are served nowhere else.
 export const API_VERSION = 1;
-export const API_REVISION = 3;
+export const API_REVISION = 4;
 const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+
+// The oldest version of each kind of client that still works with this app. A
+// client older than its entry should stop and ask to be updated; one that isn't
+// listed has no minimum.
+export const MIN_CLIENT_VERSIONS = { cli: '0.1.0', ios: '1.0' };
+
+// What GET /health answers, on the port and on the socket: that the server is
+// up, and what it speaks. Nothing about the list, so it needs no sign-in.
+export const health = () => ({ status: 'ok', appVersion: APP_VERSION, apiVersion: { version: API_VERSION, revision: API_REVISION } });
 
 const EDITABLE = ['title', 'notes', 'status', 'priority', 'due', 'project', 'tags', 'assignee', 'repeat', 'remindAt'];
 
@@ -169,25 +181,30 @@ export function createV1({ remote, openStream, viaLabel }) {
   // What every change records: who it came through, and its idempotency key if it has one.
   const write = async (req, ctx) => ({ key: idempotencyKey(req), via: await viaLabel(req, ctx) });
 
-  // [method, path template, handler({ req, res, ctx, url, params })]
+  // [method, path template, handler({ req, res, ctx, url, params }), where]
+  // `where` limits a route to one listener: 'port' or 'socket'. Elsewhere the path
+  // is answered exactly as one that does not exist. Most routes are on both.
   const ROUTES = [
     // Reveals nothing: that something answers here is already visible from the connection itself.
     ['GET', '/health', ({ res }) => json(res, 200, { status: 'ok' })],
 
-    // Sign in: exchange the access token for a session cookie.
+    // Sign in: exchange the access token for a session cookie. There is nothing to
+    // sign in to on the socket.
     ['POST', '/session', async ({ req, res, ctx }) => {
       const { token } = only(await readJson(req, ctx.bodyLimit), ['token']);
       if (typeof token !== 'string' || !remote.checkToken(token.trim())) return ctx.refuseBadToken();
       res.setHeader('Set-Cookie', sessionCookie(remote.issueSession(), { secure: ctx.secure }));
       return json(res, 200, { ok: true });
-    }],
+    }, 'port'],
     ['GET', '/session', ({ res, ctx }) => json(res, 200, { kind: ctx.session.kind })],
     ['DELETE', '/session', ({ res, ctx }) => {
       res.setHeader('Set-Cookie', clearedCookie({ secure: ctx.secure }));
       return json(res, 200, { ok: true });
-    }],
+    }, 'port'],
 
     ['GET', '/meta', ({ res }) => json(res, 200, { api: { version: API_VERSION, revision: API_REVISION }, app: { name: 'Todos', version: APP_VERSION } })],
+    // The health check's answer, plus how old a client may be and still work.
+    ['GET', '/info', ({ res }) => json(res, 200, { ...health(), minClientVersions: MIN_CLIENT_VERSIONS })],
 
     ['GET', '/events', ({ req, res, ctx }) => openStream(req, res, ctx)],
 
@@ -281,19 +298,23 @@ export function createV1({ remote, openStream, viaLabel }) {
       const daily = dailySummary(todos);
       return json(res, 200, { counts: summarize(todos), daily: daily && { title: daily.title, body: daily.body, tasks: daily.tasks.map(brief) }, date: today() });
     }],
-  ].map(([method, template, handler]) => ({
+  ].map(([method, template, handler, where]) => ({
     method,
     template,
     handler,
+    where,
     names: [...template.matchAll(/\{(\w+)\}/g)].map((m) => m[1]),
     pattern: new RegExp(`^${template.replace(/\{\w+\}/g, '(\\d+)')}$`),
   }));
 
   async function v1(req, res, ctx, url) {
     const path = url.pathname.slice('/api/v1'.length);
-    const matching = ROUTES.filter((r) => r.pattern.test(path));
-    if (!matching.length) return error(res, 404, 'not_found', 'No such endpoint.');
+    const here = ctx.local ? 'socket' : 'port';
+    const matching = ROUTES.filter((r) => r.pattern.test(path) && (!r.where || r.where === here));
     const route = matching.find((r) => r.method === req.method);
+    // Something served only on the other listener does not exist on this one.
+    const elsewhere = !route && ROUTES.some((r) => r.pattern.test(path) && r.method === req.method);
+    if (!matching.length || elsewhere) return error(res, 404, 'not_found', 'No such endpoint.');
     if (!route) {
       res.setHeader('Allow', matching.map((r) => r.method).join(', '));
       return error(res, 405, 'method_not_allowed', `${req.method} is not supported here.`);
@@ -314,7 +335,7 @@ export function createV1({ remote, openStream, viaLabel }) {
   };
 
   // For the test that keeps docs/openapi.json in step with what is actually served.
-  v1.routes = ROUTES.map(({ method, template }) => ({ method, path: template }));
+  v1.routes = ROUTES.map(({ method, template, where }) => ({ method, path: template, ...(where ? { where } : {}) }));
 
   return v1;
 }
