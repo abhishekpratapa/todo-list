@@ -116,6 +116,37 @@ Without an SSH host, the command says the app isn't running and how to add one.
 
 `todos status` shows the profile in use and the versions on both sides, or the error above that applies.
 
+## The board
+
+Run `todos` with no arguments on a terminal:
+
+```bash
+todos
+```
+
+It shows the four columns (To do, In progress, Blocked, Done) with a card for each task: title, priority, due date, project, tags, who has it and checklist progress. The tiles along the top are the dashboard's, and each is a filter. Changes made anywhere else (the app, the iPhone, a Claude session, another terminal) appear by themselves.
+
+Below 80 columns the board becomes a single list grouped by status. From 110 columns, an open task is shown beside the board; on anything narrower it takes the whole screen.
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` or `k` `j` | Move between cards |
+| `←` `→` or `h` `l` | Move between columns |
+| `g` `G` | First and last card |
+| `tab` `shift+tab`, or `1`–`5` | Choose a tile: Open, Due today, Overdue, With Claude, Done this week |
+| `/` | Search titles, notes, projects, tags and subtasks. `enter` keeps the filter, `esc` clears it |
+| `enter` | Open the task: notes, subtasks, comments, history, repeat and reminder |
+| `esc` | Back; clear the search or the filter |
+| `r` | Read the list again |
+| `?` | All the keys |
+| `q` | Quit |
+
+The line at the bottom says how things stand: `● live` while changes are arriving as they happen (`○ reconnecting` when the connection has dropped and is being reopened), the profile, how long ago the list was read, and anything that went wrong.
+
+Colors follow the app's, in a light and a dark form chosen by asking the terminal for its background. `TODOS_THEME=light` or `dark` decides instead. The selected card is marked with a bar as well as by color, so it shows in any terminal. The mouse is left alone so the terminal's own text selection keeps working; `todos --mouse` lets the board take clicks and the wheel.
+
+It works the same over SSH: it only needs a terminal.
+
 ## Commands
 
 A task is named by its number (`12` or `#12`) or by words from its title (`todos done passport`). If the words match several open tasks, you are asked which on a terminal; in a script the command fails and lists them.

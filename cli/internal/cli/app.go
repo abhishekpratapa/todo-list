@@ -31,6 +31,7 @@ import (
 	"todos/internal/creds"
 	"todos/internal/launch"
 	"todos/internal/out"
+	"todos/internal/tui"
 )
 
 // App is one run of the command. Everything it touches outside itself is a
@@ -53,11 +54,7 @@ type App struct {
 	Prompt Prompter   // asks the user things; nil means the terminal
 	Ring   creds.Ring // the keyring; nil means the system's
 	// Run runs a command that starts the app (open, or ssh).
-	Run func(ctx context.Context, argv []string) error
-	// TUI opens the interactive board. Set by the tui package's caller; nil
-	// until the board exists.
-	TUI func(ctx context.Context, a *App, s *Session) error
-
+	Run     func(ctx context.Context, argv []string) error
 	profile string
 	json    bool
 	noColor bool
@@ -434,6 +431,7 @@ func localOnly(s *Session, what string) error {
 
 // Root builds the command tree.
 func (a *App) Root() *cobra.Command {
+	var mouse bool
 	root := &cobra.Command{
 		Use:   "todos",
 		Short: "Your Todos list, from the terminal",
@@ -449,16 +447,21 @@ func (a *App) Root() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if a.TUI != nil && a.interactive() {
-				s, err := a.connect(cmd.Context())
-				if err != nil {
-					return err
-				}
-				return a.TUI(cmd.Context(), a, s)
+			if !a.interactive() {
+				return a.list(cmd.Context(), api.ListOptions{}, 0)
 			}
-			return a.list(cmd.Context(), api.ListOptions{}, 0)
+			s, err := a.connect(cmd.Context())
+			if err != nil {
+				return err
+			}
+			theme := strings.ToLower(a.Getenv("TODOS_THEME"))
+			return tui.Run(cmd.Context(), tui.Options{
+				Client: s.Client, Profile: s.Profile.Name, Mouse: mouse,
+				Dark: theme != "light", FixedTheme: theme == "light" || theme == "dark",
+			}, a.In, a.Out)
 		},
 	}
+	root.Flags().BoolVar(&mouse, "mouse", false, "let the board take mouse clicks and the wheel (this stops the terminal's own text selection)")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usagef("%v", err) })
 	pf := root.PersistentFlags()
 	pf.StringVarP(&a.profile, "profile", "p", "", "which Todos to talk to: `name` of a saved profile, or \"local\"")
