@@ -43,7 +43,7 @@ func newKeys() KeyMap {
 		Block:      b("b", "block", "b"),
 		Add:        b("a", "add", "a"),
 		Edit:       b("e", "edit", "e"),
-		Notes:      b("n", "notes in $EDITOR", "n"),
+		Notes:      b("n", "notes (in your editor)", "n"),
 		Comment:    b("c", "comment", "c"),
 		Delete:     b("d", "delete", "d"),
 		Toggle:     b("space", "check subtask", "space"),

@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -513,5 +516,70 @@ func TestFormValues(t *testing.T) {
 	again.apply(got)
 	if again.Title != "New" || again.Due != "" || again.Tags != "errand, gov" || again.Remind != "tomorrow 9am" {
 		t.Errorf("applied: %+v", again)
+	}
+}
+
+func TestNotesAndClaudeKeys(t *testing.T) {
+	m := board(t, 120, 30)
+	one := task(t, full)
+
+	// n hands the terminal to the editor: nothing is open on the board meanwhile.
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	if cmd == nil || next.(Model).edit.active() {
+		t.Error("n should start the editor")
+	}
+	// The editor closed without a change: nothing is sent.
+	path := filepath.Join(t.TempDir(), "notes.md")
+	os.WriteFile(path, []byte(one.Notes+"\n"), 0o600) //nolint:errcheck
+	same, cmd := m.Update(notesMsg{task: &one, path: path})
+	if cmd != nil || same.(Model).flash != "Notes not changed" {
+		t.Errorf("unchanged notes: flash %q", same.(Model).flash)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("the temporary file should be removed")
+	}
+	// It failed: say so, and send nothing.
+	failed, cmd := m.Update(notesMsg{task: &one, path: path, err: errors.New("exit status 1")})
+	if cmd != nil || !strings.Contains(failed.(Model).notice, "the notes were not saved") {
+		t.Errorf("a failed editor: %q", failed.(Model).notice)
+	}
+	// It changed them: they are sent, based on the task as it was opened.
+	os.WriteFile(path, []byte("New notes\n"), 0o600) //nolint:errcheck
+	if _, cmd = m.Update(notesMsg{task: &one, path: path}); cmd == nil {
+		t.Error("changed notes should be saved")
+	}
+
+	// Someone else rewrote the notes meanwhile: both are shown, and "keep editing" goes back to the editor.
+	theirs := task(t, strings.NewReplacer(`"notes":"# Steps`, `"notes":"# Their steps`, `"rev":3`, `"rev":4`).Replace(full))
+	clash := send(m, savedMsg{verb: "Updated the notes of", id: 41, base: &one, fields: map[string]any{"notes": "My notes"},
+		err: &api.Error{Status: 409, Code: "conflict", Message: "changed", Current: &theirs}})
+	if screen := plain(clash); !strings.Contains(screen, "notes") || !strings.Contains(screen, "My notes") || !strings.Contains(screen, "# Their steps") {
+		t.Errorf("the conflict:\n%s", screen)
+	}
+	again, cmd := clash.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
+	if cmd == nil || again.(Model).edit.active() {
+		t.Error("e should reopen the editor on the notes")
+	}
+
+	// C needs the Mac itself.
+	remote, cmd := m.Update(tea.KeyPressMsg{Code: 'C', Text: "C"})
+	if cmd != nil || !strings.Contains(remote.(Model).notice, "only be started on the Mac itself") {
+		t.Errorf("C on a remote profile: %q", remote.(Model).notice)
+	}
+	local := m
+	local.opts.Local = true
+	if _, cmd = local.Update(tea.KeyPressMsg{Code: 'C', Text: "C"}); cmd == nil {
+		t.Error("C on the Mac should ask the app for the session")
+	}
+	// The app's answer can't be acted on: no claude anywhere.
+	local.opts.Getenv = func(k string) string { return map[string]string{"TODOS_CLAUDE_BIN": "/no/such/claude"}[k] }
+	none, cmd := local.Update(claudeMsg{task: &one, session: &api.ClaudeSession{Prompt: "p"}})
+	if cmd != nil || !strings.Contains(none.(Model).notice, "not a program that can be run") {
+		t.Errorf("no claude: %q", none.(Model).notice)
+	}
+	for _, want := range []string{"notes (in your editor)", "start with Claude"} {
+		if help := plain(press(m, "?")); !strings.Contains(help, want) {
+			t.Errorf("the help should list %q", want)
+		}
 	}
 }

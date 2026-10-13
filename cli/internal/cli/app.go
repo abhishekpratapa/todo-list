@@ -54,7 +54,9 @@ type App struct {
 	Prompt Prompter   // asks the user things; nil means the terminal
 	Ring   creds.Ring // the keyring; nil means the system's
 	// Run runs a command that starts the app (open, or ssh).
-	Run     func(ctx context.Context, argv []string) error
+	Run func(ctx context.Context, argv []string) error
+	// Replace runs a program in this one's place, in a folder (claude).
+	Replace func(bin string, args []string, dir string) error
 	profile string
 	json    bool
 	noColor bool
@@ -73,7 +75,7 @@ func NewApp(version string) *App {
 		ErrTTY: term.IsTerminal(os.Stderr.Fd()),
 		Getenv: os.Getenv, Environ: os.Environ(),
 		Home: home, GOOS: runtime.GOOS, Exe: launch.Executable(), Version: version,
-		Run: launch.Run,
+		Run: launch.Run, Replace: replace,
 	}
 	if a.OutTTY {
 		if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil {
@@ -456,7 +458,7 @@ func (a *App) Root() *cobra.Command {
 			}
 			theme := strings.ToLower(a.Getenv("TODOS_THEME"))
 			return tui.Run(cmd.Context(), tui.Options{
-				Client: s.Client, Profile: s.Profile.Name, Mouse: mouse,
+				Client: s.Client, Profile: s.Profile.Name, Local: s.Profile.Local, Mouse: mouse, Getenv: a.Getenv,
 				Dark: theme != "light", FixedTheme: theme == "light" || theme == "dark",
 			}, a.In, a.Out)
 		},

@@ -3,6 +3,7 @@ package tui
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -50,14 +51,14 @@ const (
 type Options struct {
 	Client  *api.Client
 	Profile string // the profile's name, for the status line
-	Dark    bool   // the terminal's background, until the terminal says otherwise
+	Local   bool   // on the Mac itself, where Claude sessions can be started
+	Getenv  func(string) string
+	Dark    bool // the terminal's background, until the terminal says otherwise
 	// FixedTheme keeps Dark as given, whatever the terminal says (TODOS_THEME).
 	FixedTheme bool
 	Mouse      bool // take mouse clicks and the wheel
 	Now        func() time.Time
 	Loc        *time.Location
-	// Editor opens a file in the user's editor. Nil where there is none.
-	Editor func(path string) tea.Cmd
 }
 
 type liveState int
@@ -147,6 +148,9 @@ func New(ctx context.Context, opts Options) Model {
 	}
 	if opts.Loc == nil {
 		opts.Loc = time.Local
+	}
+	if opts.Getenv == nil {
+		opts.Getenv = os.Getenv
 	}
 	search := textinput.New()
 	search.Prompt = "/ "

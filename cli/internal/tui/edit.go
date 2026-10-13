@@ -145,10 +145,9 @@ func (m Model) fullHelp() [][]key.Binding {
 	k := m.keys
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Left, k.Right, k.Top, k.Bottom},
-		{k.NextTile, k.PrevTile, k.Search, k.Open, k.Back, k.Refresh},
-		{k.Add, k.Edit, k.Comment, k.Delete},
+		{k.NextTile, k.PrevTile, k.Search, k.Open, k.Back, k.Refresh, k.Help, k.Quit},
+		{k.Add, k.Edit, k.Notes, k.Comment, k.Delete, k.Claude},
 		{k.Done, k.Start, k.Block, k.MoveLeft, k.MoveRight, k.Toggle, k.AddSubtask},
-		{k.Help, k.Quit},
 	}
 }
 
@@ -363,6 +362,11 @@ func (m Model) editKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("Kept #%d as it is", k.current.ID)
 			return m, m.refresh()
 		case "e":
+			if notes, ok := k.fields["notes"].(string); ok && len(k.fields) == 1 {
+				// Notes are edited in the editor, not the form: back there, with my text.
+				m.edit = newEditState()
+				return m.editNotes(k.current, notes)
+			}
 			return m.openForm(k.current, k.fields)
 		}
 		return m, nil

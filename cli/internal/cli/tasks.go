@@ -124,7 +124,7 @@ func (a *App) taskCommands() []*cobra.Command {
 		a.addCmd(), a.lsCmd(), a.dueCmd(), a.showCmd(),
 		a.doneCmd(), a.statusCmd("start", "in_progress", "Started", "Move tasks to In progress"),
 		a.blockCmd(), a.statusCmd("reopen", "todo", "Reopened", "Move tasks back to To do"),
-		a.editCmd(), a.rmCmd(), a.subCmd(), a.commentCmd(), a.watchCmd(),
+		a.editCmd(), a.rmCmd(), a.subCmd(), a.commentCmd(), a.watchCmd(), a.claudeCmd(),
 	}
 }
 
@@ -404,13 +404,16 @@ func (a *App) blockCmd() *cobra.Command {
 func (a *App) editCmd() *cobra.Command {
 	var rf revFlags
 	var title, notes, due, priority, project, tags, assignee, repeat, remind, status string
+	var editor bool
 	cmd := &cobra.Command{
 		Use:   "edit <task>",
 		Short: "Change a task's fields",
 		Long: "Change a task's fields. Only the flags given are changed. Dates, reminder times\n" +
 			"and repeats are read by the app, so anything it understands works here:\n" +
 			"--due fri, --remind \"tomorrow 9am\", --repeat weekly. An empty value clears a\n" +
-			"field (--due \"\"), and --notes - reads the notes from standard input.\n\n" +
+			"field (--due \"\"), and --notes - reads the notes from standard input.\n" +
+			"--editor opens the notes in your editor ($VISUAL, then $EDITOR, then vi) and\n" +
+			"saves them when you close it.\n\n" +
 			"The change is based on the task as it is when the command runs. If someone else\n" +
 			"changes the same fields at that moment, nothing is overwritten and the command\n" +
 			"exits 4. --rev N makes that stricter (only if the task is still at revision N);\n" +
@@ -450,6 +453,19 @@ func (a *App) editCmd() *cobra.Command {
 			if err := rf.check(); err != nil {
 				return err
 			}
+			if editor {
+				if _, has := fields["notes"]; has {
+					return usagef("--editor and --notes both set the notes: use one")
+				}
+				return a.each(cmd.Context(), args, "Updated", func(s *Session, id int) (*api.TaskResult, error) {
+					if len(fields) > 0 {
+						if _, err := patch(cmd.Context(), s.Client, id, fields, rf.rev, rf.force); err != nil {
+							return nil, err
+						}
+					}
+					return a.editNotes(cmd.Context(), s, id)
+				})
+			}
 			if len(fields) == 0 {
 				return usagef("nothing to change: say what with flags such as --title, --due or --priority (see `todos edit --help`)")
 			}
@@ -461,6 +477,7 @@ func (a *App) editCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&title, "title", "", "new title")
 	f.StringVar(&notes, "notes", "", "new notes (Markdown); - reads standard input")
+	f.BoolVarP(&editor, "editor", "e", false, "edit the notes in $VISUAL or $EDITOR")
 	f.StringVar(&due, "due", "", "due date: fri, tomorrow, oct 20, 2026-10-20; \"\" clears it")
 	f.StringVar(&priority, "priority", "", "high, medium or low")
 	f.StringVar(&project, "project", "", "project; \"\" clears it")

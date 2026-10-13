@@ -153,6 +153,8 @@ Changing things, on the selected card or in an open task:
 | `+` | Add a subtask |
 | `space`, `1`–`9` | In an open task: check off the next subtask, or check and uncheck the one with that number |
 | `d` | Delete it, after asking (`y` deletes; anything else doesn't) |
+| `n` | Edit its notes in your editor (`$VISUAL`, then `$EDITOR`, then `vi`). The board steps aside and comes back when you close it |
+| `C` | Start a Claude session on it, in this terminal (on the Mac only). The board comes back when Claude exits |
 
 **If a task changes while you are editing it**, the form says so. `ctrl+r` drops your edit and loads the new version; or you can carry on and save. If what you changed is something they didn't touch, both changes are kept. If you both changed the same field, nothing is saved: the two versions are shown side by side and you choose: yours over theirs (`o`), theirs (`t`), or back to the form with your text on top of their version (`e`). The same goes for moving a card someone has just moved. A task that changed after you were asked "delete?" is not deleted.
 
@@ -177,11 +179,12 @@ A task is named by its number (`12` or `#12`) or by words from its title (`todos
 | `todos start <task>…` | Move to In progress. |
 | `todos block <task>…` | Move to Blocked. `-m "what it is waiting on"`. |
 | `todos reopen <task>…` | Move back to To do. |
-| `todos edit <task>` | `--title --notes --due --priority --project --tags --assignee --repeat --remind --status`. `--notes -` reads standard input; an empty value clears a field. |
+| `todos edit <task>` | `--title --notes --due --priority --project --tags --assignee --repeat --remind --status`. `--notes -` reads standard input; `--editor` opens the notes in your editor; an empty value clears a field. |
 | `todos rm <task>` | Delete, after asking. `--yes` doesn't ask. |
 | `todos sub add <task> <title>…` | Add subtasks. Also `sub done`, `sub undo`, `sub rm <task> <subtask>…`, where a subtask is its number or words from its title. |
 | `todos comment <task> <text>` | Add a comment. `-` reads standard input. |
 | `todos watch` | Print changes as they happen, whoever makes them. Ctrl-C stops it. |
+| `todos claude <task>` | Start a Claude session on the task in this terminal. On the Mac only; see below. |
 | `todos pair`, `todos profiles`, `todos status` | Connecting; see above. |
 | `todos version`, `todos completion <shell>` | |
 
@@ -205,6 +208,39 @@ todos add "Renew passport fri !high #personal @errand"
 | `@name` | Tag (`@claude` and `@me` set who has it) |
 
 Dates, reminder times and repeats given to `todos edit` are read by the app too, so `--due fri` and `--remind "tomorrow 9am"` work. "Today" is today on the Mac.
+
+### Starting Claude on a task
+
+```bash
+todos claude 12
+```
+
+This is the app's **Start with Claude**, in the terminal you are in. It asks the app what a session on the task is started with (the opening message, the options, and the folder it remembers for the task's project), hands the task to Claude with a note in its history ("Started with Claude from terminal in ~/code/site"), and then runs `claude` in place of itself.
+
+The session starts in `--dir` if you give one, otherwise in the folder the app remembers for the task's project, otherwise in the folder you are in. `--dir .` starts it here whatever is remembered. The folder used is remembered for the project. `--dry-run` prints the command without running it or recording anything.
+
+It uses the `claude` on your `PATH`, or the one the app found. `TODOS_CLAUDE_BIN` names a specific one.
+
+**On the Mac only.** With a paired profile the command refuses (exit 9) before sending anything: starting programs on the Mac, and where its folders are, stay on the Mac. The app does not serve this over the network either.
+
+### Shell completion
+
+Completion covers commands, flags, flag values and open tasks (by number, with the title shown). It asks the app for the tasks and never starts it.
+
+```bash
+# zsh: once, then open a new terminal
+todos completion zsh > "${fpath[1]}/_todos"
+```
+
+```bash
+# bash (needs bash-completion): in ~/.bashrc
+source <(todos completion bash)
+```
+
+```bash
+# fish
+todos completion fish > ~/.config/fish/completions/todos.fish
+```
 
 ### Changing a task someone else is changing
 
@@ -302,6 +338,8 @@ fi
 | `TODOS_START_TIMEOUT` | Seconds to wait for the app to start. |
 | `TODOS_LAUNCH_CMD` | A shell command that starts the app, instead of `open`. For a copy run from source. |
 | `TODOS_SSH` | The `ssh` program to use. |
+| `TODOS_CLAUDE_BIN` | The `claude` program to use, as in the app. |
+| `VISUAL`, `EDITOR` | The editor for notes. |
 | `TODOS_CA_FILE` | Extra certificate authorities to trust (PEM), for a hub that isn't behind Tailscale's certificates. |
 | `TODOS_THEME` | `light` or `dark`, instead of asking the terminal. |
 | `NO_COLOR` | No color. |

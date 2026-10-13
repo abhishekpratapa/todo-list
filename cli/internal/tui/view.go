@@ -417,5 +417,13 @@ func (m Model) helpLine() string {
 }
 
 func (m Model) helpPage() string {
-	return "\n" + lipgloss.NewStyle().Padding(0, 2).Render(m.styles.Title.Render("Keys")+"\n\n"+m.help.FullHelpView(m.fullHelp()))
+	groups := m.fullHelp()
+	wide := m.help
+	wide.SetWidth(0) // as wide as it wants, to see whether it fits
+	keys := wide.FullHelpView(groups)
+	if lipgloss.Width(keys) > m.width-4 {
+		// Too wide for the window: two groups above, two below.
+		keys = wide.FullHelpView(groups[:2]) + "\n\n" + wide.FullHelpView(groups[2:])
+	}
+	return "\n" + lipgloss.NewStyle().Padding(0, 2).Render(m.styles.Title.Render("Keys")+"\n\n"+keys)
 }
