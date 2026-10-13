@@ -194,3 +194,101 @@ struct SharingTests {
         #expect(nothing.title.isEmpty && nothing.notes.isEmpty)
     }
 }
+
+@Suite("What the widget shows")
+struct DueOverviewTests {
+    let today = Day("2026-10-12")!
+    let tasks: [TodoTask] = [
+        Sample.task(1, "Overdue, older", due: "2026-10-01"),
+        Sample.task(2, "Overdue, newer", priority: .high, due: "2026-10-10"),
+        Sample.task(3, "Today, low", priority: .low, due: "2026-10-12"),
+        Sample.task(4, "Today, high", priority: .high, due: "2026-10-12"),
+        Sample.task(5, "Tomorrow", due: "2026-10-13"),
+        Sample.task(6, "In a week", due: "2026-10-19"),
+        Sample.task(7, "In eight days", due: "2026-10-20"),
+        Sample.task(8, "No date"),
+        Sample.task(9, "Done today", status: .done, due: "2026-10-12"),
+        Sample.task(10, "Done, was overdue", status: .done, due: "2026-10-01"),
+        Sample.task(11, "Friday, blocked", status: .blocked, due: "2026-10-16"),
+        Sample.task(12, "Friday, high", priority: .high, due: "2026-10-16"),
+    ]
+    var overview: DueOverview { DueOverview(tasks: tasks, on: today) }
+
+    @Test("open tasks are sorted into overdue, today, the week ahead and the rest; finished ones are left out")
+    func sorting() {
+        #expect(overview.overdue.map(\.id) == [1, 2], "longest overdue first")
+        #expect(overview.today.map(\.id) == [4, 3], "by priority, like the list")
+        #expect(overview.upcoming.map(\.id) == [5, 11, 12, 6], "soonest first; within a day, the list's order")
+        #expect(overview.dueNow.map(\.id) == [1, 2, 4, 3])
+        #expect(overview.later.map(\.id) == [7, 8], "more than a week out, and undated: the list's order")
+        let all = overview.overdue + overview.today + overview.upcoming + overview.later
+        #expect(all.map(\.id).sorted() == [1, 2, 3, 4, 5, 6, 7, 8, 11, 12], "each open task appears once")
+    }
+
+    @Test("the summary counts what is due")
+    func summary() {
+        #expect(overview.summary == "2 due today · 2 overdue")
+        #expect(DueOverview(tasks: [Sample.task(1, due: "2026-10-12")], on: today).summary == "1 due today")
+        #expect(DueOverview(tasks: [Sample.task(1, due: "2026-10-20")], on: today).summary == "Nothing due today")
+        #expect(DueOverview(tasks: [], on: today) == DueOverview())
+    }
+
+    @Test("with plenty of room, everything is shown under its heading")
+    func fits() {
+        let (sections, hidden) = overview.sections(fitting: 14)
+        #expect(sections.map(\.kind) == [.overdue, .today, .upcoming, .later])
+        #expect(sections.map { $0.tasks.map(\.id) } == [[1, 2], [4, 3], [5, 11, 12, 6], [7, 8]])
+        #expect(hidden == 0)
+        #expect(sections.map(\.kind.label) == ["Overdue", "Today", "Coming up", "Also open"])
+    }
+
+    @Test("with less room, what is due now comes first and the rest is counted as hidden")
+    func truncates() {
+        var (sections, hidden) = overview.sections(fitting: 13) // 4 headings + 9 tasks
+        #expect(sections.map { $0.tasks.map(\.id) } == [[1, 2], [4, 3], [5, 11, 12, 6], [7]])
+        #expect(hidden == 1)
+
+        (sections, hidden) = overview.sections(fitting: 12) // no room for a fourth heading with a task under it
+        #expect(sections.map(\.kind) == [.overdue, .today, .upcoming])
+        #expect(hidden == 2)
+
+        (sections, hidden) = overview.sections(fitting: 8) // 3 headings + 5 tasks
+        #expect(sections.map { $0.tasks.map(\.id) } == [[1, 2], [4, 3], [5]])
+        #expect(hidden == 5)
+
+        (sections, hidden) = overview.sections(fitting: 6)
+        #expect(sections.map(\.kind) == [.overdue, .today])
+        #expect(hidden == 6)
+
+        (sections, hidden) = overview.sections(fitting: 2)
+        #expect(sections.map { $0.tasks.map(\.id) } == [[1]])
+        #expect(hidden == 9)
+
+        (sections, hidden) = overview.sections(fitting: 1)
+        #expect(sections.isEmpty && hidden == 10)
+    }
+
+    @Test("when nothing is due, the room goes to the rest of the open tasks")
+    func nothingDue() {
+        let undated = DueOverview(tasks: [Sample.task(1, "Someday"), Sample.task(2, "Urgent, no date", priority: .high), Sample.task(3, "Finished", status: .done)], on: today)
+        #expect(undated.dueNow.isEmpty && undated.summary == "Nothing due today")
+        let (sections, hidden) = undated.sections(fitting: 10)
+        #expect(sections.map(\.kind) == [.later])
+        #expect(sections[0].tasks.map(\.id) == [2, 1] && hidden == 0)
+    }
+
+    @Test("an empty section takes no room")
+    func emptySections() {
+        let quiet = DueOverview(tasks: [Sample.task(5, "Tomorrow", due: "2026-10-13"), Sample.task(6, "In a week", due: "2026-10-19")], on: today)
+        let (sections, hidden) = quiet.sections(fitting: 3)
+        #expect(sections.map(\.kind) == [.upcoming])
+        #expect(sections[0].tasks.count == 2 && hidden == 0)
+    }
+
+    @Test("the week ahead is counted in calendar days, across a month end")
+    func weekAhead() {
+        let end = Day("2026-10-28")!
+        let tasks = [Sample.task(1, "Next month", due: "2026-11-04"), Sample.task(2, "Too far", due: "2026-11-05")]
+        #expect(DueOverview(tasks: tasks, on: end).upcoming.map(\.id) == [1])
+    }
+}

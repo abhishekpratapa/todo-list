@@ -142,3 +142,81 @@ extension [TodoTask] {
         )
     }
 }
+
+// MARK: - What is due (for the widget)
+
+/// The open tasks by how soon they are due: overdue, today, the days after, and the rest.
+/// This is what the widget shows.
+public struct DueOverview: Sendable, Equatable {
+    public enum Kind: Sendable, Equatable, Hashable {
+        case overdue, today, upcoming, later
+
+        public var label: String {
+            switch self {
+            case .overdue: "Overdue"
+            case .today: "Today"
+            case .upcoming: "Coming up"
+            case .later: "Also open"
+            }
+        }
+    }
+
+    public struct Section: Sendable, Equatable, Identifiable {
+        public var kind: Kind
+        public var tasks: [TodoTask]
+
+        public var id: Kind { kind }
+    }
+
+    public var overdue: [TodoTask]
+    public var today: [TodoTask]
+    /// Due after today and within `upcomingDays`, soonest first.
+    public var upcoming: [TodoTask]
+    /// Every other open task: no date, or due further off. In the list's order.
+    public var later: [TodoTask]
+
+    public init(overdue: [TodoTask] = [], today: [TodoTask] = [], upcoming: [TodoTask] = [], later: [TodoTask] = []) {
+        self.overdue = overdue
+        self.today = today
+        self.upcoming = upcoming
+        self.later = later
+    }
+
+    public init(tasks: [TodoTask], on day: Day, calendar: Calendar = .current, upcomingDays: Int = 7) {
+        let open = tasks.inListOrder().filter(\.status.isOpen)
+        overdue = open.filter { $0.isOverdue(on: day) }.sorted { ($0.due ?? day) < ($1.due ?? day) }
+        today = open.filter { $0.isDueToday(day) }
+        upcoming = open
+            .filter { task in task.due.map { $0 > day && $0.days(since: day, calendar: calendar) <= upcomingDays } ?? false }
+            .sorted { ($0.due ?? day) < ($1.due ?? day) } // a stable sort: within a day, the list's own order
+        let dated = Set((overdue + today + upcoming).map(\.id))
+        later = open.filter { !dated.contains($0.id) }
+    }
+
+    /// Overdue and due today together: what needs doing now.
+    public var dueNow: [TodoTask] { overdue + today }
+
+    /// "2 due today · 1 overdue"
+    public var summary: String {
+        var parts: [String] = []
+        if !today.isEmpty { parts.append("\(today.count) due today") }
+        if !overdue.isEmpty { parts.append("\(overdue.count) overdue") }
+        return parts.isEmpty ? "Nothing due today" : parts.joined(separator: " · ")
+    }
+
+    /// The sections to draw in a space with room for `rows` lines, where each section's
+    /// heading takes a line too. Overdue comes first, then today, then what is coming up,
+    /// then the rest. `hidden` is how many tasks did not fit.
+    public func sections(fitting rows: Int) -> (sections: [Section], hidden: Int) {
+        var left = rows
+        var out: [Section] = []
+        for (kind, tasks) in [(Kind.overdue, overdue), (.today, today), (.upcoming, upcoming), (.later, later)] where !tasks.isEmpty {
+            guard left >= 2 else { break } // a heading with nothing under it is worse than no heading
+            let shown = Array(tasks.prefix(left - 1))
+            out.append(Section(kind: kind, tasks: shown))
+            left -= shown.count + 1
+        }
+        let total = overdue.count + today.count + upcoming.count + later.count
+        return (out, total - out.reduce(0) { $0 + $1.tasks.count })
+    }
+}

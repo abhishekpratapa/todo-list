@@ -110,7 +110,15 @@ Turn on **Settings → Reminders on This iPhone** in the app (the gear at the to
 
 ### Widget
 
-Touch and hold the home screen, tap **Edit → Add Widget**, and choose **Todos**. It comes in small and medium sizes and as a lock screen widget, and shows what is due today and overdue. Tapping a task opens it.
+Touch and hold the home screen, tap **Edit → Add Widget**, choose **Todos**, swipe to the size you want and tap **Add Widget**. Tapping a task in the widget opens it.
+
+| Size | Shows |
+| --- | --- |
+| Small, medium | The count, and the first three or four tasks that are overdue or due today. |
+| Large | The same under **Overdue** and **Today** headings, then **Coming up** (due in the next seven days, with the day) and, where there is still room, **Also open** (everything else that is not done). It fits as many lines as the text size allows and says how many tasks were left out. |
+| Lock screen | The count and the first two tasks. |
+
+Large is the biggest size iOS offers on an iPhone: it takes four of a page's six rows of icons. iOS gives neither an app nor a Mac a way to put a widget on the home screen for you.
 
 The widget reads the list kept on the iPhone, with your waiting changes applied, so it shows what the app shows. It does not contact the Mac itself: it updates when the app does, and at midnight.
 

@@ -1,4 +1,6 @@
 // The home screen and lock screen widget: what is due today and what is overdue.
+// The large size also shows what is coming up in the next week and, where there
+// is still room, the rest of the open tasks.
 //
 // It reads the list the app keeps in the shared container, with this iPhone's
 // waiting changes on top, so it shows what the app shows. It never contacts the
@@ -12,32 +14,23 @@ import WidgetKit
 struct DueEntry: TimelineEntry, Sendable {
     var date: Date
     var isPaired = true
-    var overdue: [TodoTask] = []
-    var today: [TodoTask] = []
-
-    var tasks: [TodoTask] { overdue + today }
-
-    /// "2 due today · 1 overdue"
-    var summary: String {
-        var parts: [String] = []
-        if !today.isEmpty { parts.append("\(today.count) due today") }
-        if !overdue.isEmpty { parts.append("\(overdue.count) overdue") }
-        return parts.isEmpty ? "Nothing due today" : parts.joined(separator: " · ")
-    }
+    var due = DueOverview()
 
     static let sample = DueEntry(
         date: Date(),
-        overdue: [TodoTask(id: 1, title: "Pay electricity bill")],
-        today: [TodoTask(id: 2, title: "Renew passport", priority: .high), TodoTask(id: 3, title: "Water the plants")]
+        due: DueOverview(
+            overdue: [TodoTask(id: 1, title: "Pay electricity bill", due: Day(Date().addingTimeInterval(-2 * 86_400)))],
+            today: [TodoTask(id: 2, title: "Renew passport", priority: .high, due: .today()), TodoTask(id: 3, title: "Water the plants", due: .today())],
+            upcoming: [TodoTask(id: 4, title: "Book flights", due: Day(Date().addingTimeInterval(2 * 86_400))), TodoTask(id: 5, title: "Call the bank", due: Day(Date().addingTimeInterval(4 * 86_400)))],
+            later: [TodoTask(id: 6, title: "Plan the garden"), TodoTask(id: 7, title: "Sort old photos")]
+        )
     )
 
     /// What the list on this iPhone says is due, as of `date`.
     static func current(at date: Date) -> DueEntry {
         guard let folder = SharedContainer.currentHubDirectory() else { return DueEntry(date: date, isPaired: false) }
         let stored = LocalStore.read(directory: folder)
-        let day = Day(date)
-        let open = stored.list.tasks.applying(stored.changes).inListOrder().filter(\.status.isOpen)
-        return DueEntry(date: date, overdue: open.filter { $0.isOverdue(on: day) }, today: open.filter { $0.isDueToday(day) })
+        return DueEntry(date: date, due: DueOverview(tasks: stored.list.tasks.applying(stored.changes), on: Day(date)))
     }
 }
 
@@ -62,6 +55,7 @@ struct DueWidgetView: View {
     var entry: DueEntry
 
     private static let accent = Color(red: 0x55 / 255, green: 0x50 / 255, blue: 0xD8 / 255)
+    private var due: DueOverview { entry.due }
 
     var body: some View {
         Group {
@@ -71,65 +65,153 @@ struct DueWidgetView: View {
                     .foregroundStyle(.secondary)
             } else {
                 switch family {
-                case .accessoryRectangular: lockScreen
-                case .systemSmall: list(showing: 3)
-                default: list(showing: 4)
+                case .accessoryRectangular:
+                    lockScreen
+                case .systemLarge:
+                    // As many lines as fit at the current text size.
+                    ViewThatFits(in: .vertical) {
+                        ForEach(Array((2...16).reversed()), id: \.self) { large(rows: $0) }
+                    }
+                case .systemSmall:
+                    compact(showing: 3)
+                default:
+                    compact(showing: 4)
                 }
             }
         }
         .accessibilityElement(children: .contain)
     }
 
+    // MARK: Lock screen
+
     private var lockScreen: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(entry.summary).font(.headline).widgetAccentable()
-            ForEach(entry.tasks.prefix(2)) { task in
+            Text(due.summary).font(.headline).widgetAccentable()
+            ForEach(due.dueNow.prefix(2)) { task in
                 Text(task.title).font(.footnote).lineLimit(1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func list(showing limit: Int) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("\(entry.tasks.count)")
-                    .font(.title.weight(.bold))
-                    .foregroundStyle(entry.overdue.isEmpty ? Self.accent : Color.red)
-                Text(entry.overdue.isEmpty ? "due today" : entry.today.isEmpty ? "overdue" : "due · \(entry.overdue.count) overdue")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(entry.summary)
+    // MARK: Small and medium
 
-            if entry.tasks.isEmpty {
+    private func compact(showing limit: Int) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            count
+            if due.dueNow.isEmpty {
                 Text("Nothing due today.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            ForEach(entry.tasks.prefix(limit)) { task in
-                Link(destination: AppLinks.task(task.id)) {
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Image(systemName: entry.overdue.contains(task) ? "exclamationmark.circle.fill" : "circle")
-                            .font(.caption2)
-                            .foregroundStyle(entry.overdue.contains(task) ? Color.red : Color.secondary)
-                        Text(task.title)
-                            .font(.footnote)
-                            .lineLimit(1)
-                    }
-                }
-                .accessibilityLabel("\(task.title), \(entry.overdue.contains(task) ? "overdue" : "due today")")
+            ForEach(due.dueNow.prefix(limit)) { task in
+                row(task, due.overdue.contains(task) ? .overdue : .today, detail: false)
             }
-            if entry.tasks.count > limit {
-                Text("and \(entry.tasks.count - limit) more")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            if due.dueNow.count > limit {
+                more(due.dueNow.count - limit)
             }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    // MARK: Large
+
+    /// Overdue, today, the week ahead and the rest, each under its heading, in `rows` lines.
+    private func large(rows: Int) -> some View {
+        let plan = due.sections(fitting: rows)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                count
+                Text(entry.date, format: .dateTime.weekday(.wide).month().day())
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if plan.sections.isEmpty {
+                Text(plan.hidden == 0 ? "Nothing left to do." : "Open Todos to see what is due.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+            ForEach(plan.sections) { section in
+                Text(section.kind.label.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(section.kind == .overdue ? Color.red : Color.secondary)
+                    .padding(.top, 2)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(section.tasks) { task in
+                    row(task, section.kind, detail: true)
+                }
+            }
+            if plan.hidden > 0 {
+                more(plan.hidden)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    // MARK: Pieces
+
+    /// The big number: how much is due now.
+    private var count: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("\(due.dueNow.count)")
+                .font(.title.weight(.bold))
+                .foregroundStyle(due.overdue.isEmpty ? Self.accent : Color.red)
+            Text(due.overdue.isEmpty ? "due today" : due.today.isEmpty ? "overdue" : "due · \(due.overdue.count) overdue")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(due.summary)
+    }
+
+    /// One task. Tapping it opens it in the app. `detail` adds its date and priority, where there is room.
+    private func row(_ task: TodoTask, _ kind: DueOverview.Kind, detail: Bool) -> some View {
+        let today = Day(entry.date)
+        let when = task.due.map { $0.label(relativeTo: today) } ?? ""
+        return Link(destination: AppLinks.task(task.id)) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: kind == .overdue ? "exclamationmark.circle.fill" : "circle")
+                    .font(.caption2)
+                    .foregroundStyle(kind == .overdue ? Color.red : Color.secondary)
+                Text(task.title)
+                    .font(detail ? .subheadline : .footnote)
+                    .lineLimit(1)
+                if detail {
+                    if task.priority == .high {
+                        Image(systemName: "exclamationmark")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.red)
+                    }
+                    Spacer(minLength: 4)
+                    if kind != .today, !when.isEmpty {
+                        Text(when)
+                            .font(.caption)
+                            .foregroundStyle(kind == .overdue ? Color.red : Color.secondary)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    }
+                }
+            }
+        }
+        .accessibilityLabel([task.title, spoken(kind, when)].filter { !$0.isEmpty }.joined(separator: ", "))
+    }
+
+    private func spoken(_ kind: DueOverview.Kind, _ when: String) -> String {
+        switch kind {
+        case .overdue: "overdue since \(when)"
+        case .today: "due today"
+        case .upcoming, .later: when.isEmpty ? "" : "due \(when)"
+        }
+    }
+
+    private func more(_ count: Int) -> some View {
+        Text("and \(count) more")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -140,8 +222,8 @@ struct DueWidget: Widget {
                 .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Due Today")
-        .description("Tasks due today and overdue, from the list on this iPhone.")
-        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
+        .description("Tasks due today and overdue. The large size adds the week ahead and your other open tasks.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryRectangular])
     }
 }
 
