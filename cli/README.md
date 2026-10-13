@@ -141,6 +141,21 @@ Below 80 columns the board becomes a single list grouped by status. From 110 col
 | `?` | All the keys |
 | `q` | Quit |
 
+Changing things, on the selected card or in an open task:
+
+| Key | What it does |
+|---|---|
+| `a` | Add a task from one line, in the same syntax as `todos add`. As you type, the bottom line shows how the app reads it |
+| `H` `L` (or `shift+←` `shift+→`) | Move the card one column left or right |
+| `s` `b` `x` | Start it, block it, finish it |
+| `e` | Edit its fields in a form: title, due, priority, project, tags, who has it, repeat, reminder |
+| `c` | Add a comment |
+| `+` | Add a subtask |
+| `space`, `1`–`9` | In an open task: check off the next subtask, or check and uncheck the one with that number |
+| `d` | Delete it, after asking (`y` deletes; anything else doesn't) |
+
+**If a task changes while you are editing it**, the form says so. `ctrl+r` drops your edit and loads the new version; or you can carry on and save. If what you changed is something they didn't touch, both changes are kept. If you both changed the same field, nothing is saved: the two versions are shown side by side and you choose: yours over theirs (`o`), theirs (`t`), or back to the form with your text on top of their version (`e`). The same goes for moving a card someone has just moved. A task that changed after you were asked "delete?" is not deleted.
+
 The line at the bottom says how things stand: `● live` while changes are arriving as they happen (`○ reconnecting` when the connection has dropped and is being reopened), the profile, how long ago the list was read, and anything that went wrong.
 
 Colors follow the app's, in a light and a dark form chosen by asking the terminal for its background. `TODOS_THEME=light` or `dark` decides instead. The selected card is marked with a bar as well as by color, so it shows in any terminal. The mouse is left alone so the terminal's own text selection keeps working; `todos --mouse` lets the board take clicks and the wheel.

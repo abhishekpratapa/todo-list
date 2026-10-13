@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -494,6 +495,36 @@ func (c *Client) Create(ctx context.Context, fields map[string]any) (*TaskResult
 // task that has moved on is refused with an *Error whose Current is the task now.
 func (c *Client) Patch(ctx context.Context, id int, fields map[string]any, rev int) (*TaskResult, error) {
 	return c.change(ctx, request{method: "PATCH", path: taskPath(id), body: fields, rev: rev})
+}
+
+// PatchOnTop changes fields of a task that was read as `base`, without
+// overwriting anyone else's change. If the task has moved on since, the change
+// is tried once more only when none of these fields were among what moved:
+// then both changes stand. If the same fields changed, the conflict is returned
+// (an *Error with Current set) and nothing is done.
+func (c *Client) PatchOnTop(ctx context.Context, base *Task, fields map[string]any) (*TaskResult, error) {
+	res, err := c.Patch(ctx, base.ID, fields, base.Rev)
+	var refused *Error
+	if !errors.As(err, &refused) || refused.Status != http.StatusConflict || refused.Current == nil {
+		return res, err
+	}
+	if len(Overlap(base, refused.Current, fields)) > 0 {
+		return nil, err
+	}
+	return c.Patch(ctx, base.ID, fields, refused.Current.Rev)
+}
+
+// Overlap lists which of fields differ between two readings of a task: the
+// fields a change based on the first would overwrite in the second.
+func Overlap(base, current *Task, fields map[string]any) []string {
+	var names []string
+	for name := range fields {
+		if !bytes.Equal(base.Field(name), current.Field(name)) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (c *Client) Delete(ctx context.Context, id int, rev int) error {

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
@@ -167,4 +168,73 @@ func TestCommandsOnARealTerminal(t *testing.T) {
 	if regexp.MustCompile("\x1b\\[[0-9;]*(3[0-7]|9[0-7])m").MatchString(term.raw()) {
 		t.Errorf("ls with NO_COLOR on a terminal: %q", term.raw())
 	}
+}
+
+// Changes made on the board reach the server, and conflicts are not overwritten.
+func TestEditingOnARealTerminal(t *testing.T) {
+	everywhere(t, func(t *testing.T, b *backend) {
+		first := b.add(t, "Starts here")
+		term := openTerminal(t, b.env, 120, 34)
+		term.waitFor(t, "Starts here")
+		term.waitFor(t, "live")
+
+		// Quick capture, read by the server as `todos add` is.
+		term.send(t, "a")
+		term.waitFor(t, "add ›")
+		term.send(t, "Fix the door tomorrow !high #home\r")
+		term.waitFor(t, "Added #2")
+		added := b.get(t, 2)
+		if added.Title != "Fix the door" || added.Priority != "high" || added.Project != "home" || added.Due == "" {
+			t.Fatalf("the server has %+v", added)
+		}
+
+		// The new card is selected: move it along, comment on it, finish it.
+		term.send(t, "L")
+		waitUntil(t, "the card to be in progress", func() bool { return b.get(t, 2).Status == "in_progress" })
+		term.send(t, "c")
+		term.waitFor(t, "comment ›")
+		term.send(t, "Hinge ordered\r")
+		waitUntil(t, "the comment", func() bool { return b.get(t, 2).CommentCount() == 1 })
+		term.send(t, "x")
+		waitUntil(t, "the card to be done", func() bool { return b.get(t, 2).Status == "done" })
+
+		// Edit the other task's title in the form while someone else renames it:
+		// the form says so, and saving shows both versions instead of overwriting.
+		term.send(t, "g") // the Done column has only the card just finished
+		term.send(t, "h")
+		term.send(t, "h")
+		term.send(t, "h")
+		term.send(t, "e")
+		term.waitFor(t, "Edit #1")
+		term.send(t, " (mine)")
+		if _, err := b.client.Patch(context.Background(), first.ID, map[string]any{"title": "Renamed elsewhere"}, first.Rev); err != nil {
+			t.Fatal(err)
+		}
+		term.waitFor(t, "was changed elsewhere while you edit")
+		for i := 0; i < 8; i++ {
+			term.send(t, "\r")
+			time.Sleep(60 * time.Millisecond)
+		}
+		term.waitFor(t, "was changed by someone else while you were changing it")
+		if got := b.get(t, 1).Title; got != "Renamed elsewhere" {
+			t.Fatalf("the other change was overwritten: %q", got)
+		}
+		term.send(t, "o") // mine, having seen both
+		waitUntil(t, "my title to be saved", func() bool { return b.get(t, 1).Title == "Starts here (mine)" })
+
+		term.send(t, "q")
+		if code := term.exit(t); code != 0 {
+			t.Errorf("exit %d", code)
+		}
+	})
+}
+
+func waitUntil(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(30 * time.Millisecond) {
+		if ok() {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

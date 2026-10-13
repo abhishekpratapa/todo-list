@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -94,17 +93,7 @@ func patch(ctx context.Context, c *api.Client, id int, fields map[string]any, re
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.Patch(ctx, id, fields, base.Rev)
-	var refused *api.Error
-	if !errors.As(err, &refused) || refused.Status != 409 || refused.Current == nil {
-		return res, err
-	}
-	for field := range fields {
-		if !bytes.Equal(base.Field(field), refused.Current.Field(field)) {
-			return nil, err
-		}
-	}
-	return c.Patch(ctx, id, fields, refused.Current.Rev)
+	return c.PatchOnTop(ctx, base, fields)
 }
 
 // list prints tasks matching o. limit 0 means all of them.

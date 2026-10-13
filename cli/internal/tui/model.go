@@ -108,6 +108,7 @@ type Model struct {
 	retry   time.Duration
 	updated time.Time
 	notice  string // something that went wrong, shown until the next thing works
+	flash   string // what the last change did, shown until the next key
 
 	edit editState // see edit.go
 }
@@ -246,6 +247,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.SetWidth(msg.Width)
 		m.layoutDetail()
 		m.clamp()
+		if m.edit.mode == editForm {
+			return m.formUpdate(msg)
+		}
 		return m, nil
 
 	case tea.BackgroundColorMsg:
@@ -348,6 +352,7 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.edit.active() {
 		return m.editKey(msg)
 	}
+	m.flash = ""
 	if m.showHelp {
 		m.showHelp = false
 		m.help.ShowAll = false

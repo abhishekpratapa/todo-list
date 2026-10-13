@@ -147,6 +147,8 @@ func (m Model) secondLine() string {
 	switch {
 	case m.edit.banner() != "":
 		return ansi.Truncate(m.styles.Banner.Render(m.edit.banner()), m.width, "…")
+	case m.edit.mode == editCapture, m.edit.mode == editComment, m.edit.mode == editSubtask:
+		return ansi.Truncate(" "+m.edit.input.View(), m.width, "")
 	case m.searching:
 		return ansi.Truncate(" "+m.search.View(), m.width, "")
 	case m.query != "":
@@ -185,7 +187,7 @@ func (m Model) boardView(width, height int) string {
 	rendered := make([]string, 0, 7)
 	for c := range cols {
 		style := m.styles.Column
-		if c == m.col && m.detail == nil && !m.edit.active() {
+		if c == m.col && m.detail == nil {
 			style = m.styles.ColumnFocused
 		}
 		inner := widths[c] - 4
@@ -196,7 +198,7 @@ func (m Model) boardView(width, height int) string {
 			lines = append(lines, first, second, "")
 		}
 		if len(cols[c]) == 0 {
-			lines = append(lines, m.styles.Faint.Render("  nothing here"))
+			lines = append(lines, m.styles.Faint.Render(ansi.Truncate("  nothing here", inner, "")))
 		}
 		var more []string
 		if m.top[c] > 0 {
@@ -390,8 +392,12 @@ func (m Model) statusView() string {
 	}
 	left := " " + strings.Join(parts, s.Faint.Render(" · "))
 	right := ""
-	if m.notice != "" {
-		right = s.Error.Render(ansi.Truncate(strings.Join(strings.Fields(m.notice), " "), max(10, m.width-lipgloss.Width(left)-3), "…")) + " "
+	room := max(10, m.width-lipgloss.Width(left)-3)
+	switch {
+	case m.notice != "":
+		right = s.Error.Render(ansi.Truncate(strings.Join(strings.Fields(m.notice), " "), room, "…")) + " "
+	case m.flash != "":
+		right = s.OK.Render(ansi.Truncate(strings.Join(strings.Fields(m.flash), " "), room, "…")) + " "
 	}
 	return spread(left, right, m.width)
 }
