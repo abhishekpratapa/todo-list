@@ -8,6 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		7D0000000000000000000082 /* TodosKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7D0000000000000000000081 /* TodosKit */; };
+		7D0000000000000000000086 /* TodosKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7D0000000000000000000085 /* TodosKit */; };
+		7D0000000000000000000088 /* TodosKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7D0000000000000000000087 /* TodosKit */; };
+		7D0000000000000000000131 /* TodosWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 7D0000000000000000000012 /* TodosWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		7D0000000000000000000132 /* TodosShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 7D0000000000000000000013 /* TodosShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -18,11 +22,42 @@
 			remoteGlobalIDString = 7D0000000000000000000020;
 			remoteInfo = Todos;
 		};
+		7D0000000000000000000121 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7D0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7D0000000000000000000100;
+			remoteInfo = TodosWidget;
+		};
+		7D0000000000000000000123 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7D0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7D0000000000000000000110;
+			remoteInfo = TodosShare;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		7D0000000000000000000130 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				7D0000000000000000000131 /* TodosWidget.appex in Embed Foundation Extensions */,
+				7D0000000000000000000132 /* TodosShare.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		7D0000000000000000000010 /* Todos.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Todos.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7D0000000000000000000011 /* TodosTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TodosTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7D0000000000000000000012 /* TodosWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TodosWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		7D0000000000000000000013 /* TodosShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TodosShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +69,16 @@
 		7D0000000000000000000005 /* TodosTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = TodosTests;
+			sourceTree = "<group>";
+		};
+		7D0000000000000000000006 /* TodosWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TodosWidget;
+			sourceTree = "<group>";
+		};
+		7D0000000000000000000007 /* TodosShare */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TodosShare;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -54,6 +99,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7D0000000000000000000102 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7D0000000000000000000086 /* TodosKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D0000000000000000000112 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7D0000000000000000000088 /* TodosKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -62,6 +123,8 @@
 			children = (
 				7D0000000000000000000004 /* Todos */,
 				7D0000000000000000000005 /* TodosTests */,
+				7D0000000000000000000006 /* TodosWidget */,
+				7D0000000000000000000007 /* TodosShare */,
 				7D0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -71,6 +134,8 @@
 			children = (
 				7D0000000000000000000010 /* Todos.app */,
 				7D0000000000000000000011 /* TodosTests.xctest */,
+				7D0000000000000000000012 /* TodosWidget.appex */,
+				7D0000000000000000000013 /* TodosShare.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -85,10 +150,13 @@
 				7D0000000000000000000021 /* Sources */,
 				7D0000000000000000000022 /* Frameworks */,
 				7D0000000000000000000023 /* Resources */,
+				7D0000000000000000000130 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				7D0000000000000000000120 /* PBXTargetDependency */,
+				7D0000000000000000000122 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				7D0000000000000000000004 /* Todos */,
@@ -124,6 +192,52 @@
 			productReference = 7D0000000000000000000011 /* TodosTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		7D0000000000000000000100 /* TodosWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7D0000000000000000000140 /* Build configuration list for PBXNativeTarget "TodosWidget" */;
+			buildPhases = (
+				7D0000000000000000000101 /* Sources */,
+				7D0000000000000000000102 /* Frameworks */,
+				7D0000000000000000000103 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				7D0000000000000000000006 /* TodosWidget */,
+			);
+			name = TodosWidget;
+			packageProductDependencies = (
+				7D0000000000000000000085 /* TodosKit */,
+			);
+			productName = TodosWidget;
+			productReference = 7D0000000000000000000012 /* TodosWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		7D0000000000000000000110 /* TodosShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7D0000000000000000000150 /* Build configuration list for PBXNativeTarget "TodosShare" */;
+			buildPhases = (
+				7D0000000000000000000111 /* Sources */,
+				7D0000000000000000000112 /* Frameworks */,
+				7D0000000000000000000113 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				7D0000000000000000000007 /* TodosShare */,
+			);
+			name = TodosShare;
+			packageProductDependencies = (
+				7D0000000000000000000087 /* TodosKit */,
+			);
+			productName = TodosShare;
+			productReference = 7D0000000000000000000013 /* TodosShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -140,6 +254,12 @@
 					7D0000000000000000000030 = {
 						CreatedOnToolsVersion = 16.0;
 						TestTargetID = 7D0000000000000000000020;
+					};
+					7D0000000000000000000100 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					7D0000000000000000000110 = {
+						CreatedOnToolsVersion = 16.0;
 					};
 				};
 			};
@@ -162,6 +282,8 @@
 			targets = (
 				7D0000000000000000000020 /* Todos */,
 				7D0000000000000000000030 /* TodosTests */,
+				7D0000000000000000000100 /* TodosWidget */,
+				7D0000000000000000000110 /* TodosShare */,
 			);
 		};
 /* End PBXProject section */
@@ -175,6 +297,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		7D0000000000000000000033 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D0000000000000000000103 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D0000000000000000000113 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -198,6 +334,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7D0000000000000000000101 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D0000000000000000000111 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -205,6 +355,16 @@
 			isa = PBXTargetDependency;
 			target = 7D0000000000000000000020 /* Todos */;
 			targetProxy = 7D0000000000000000000041 /* PBXContainerItemProxy */;
+		};
+		7D0000000000000000000120 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7D0000000000000000000100 /* TodosWidget */;
+			targetProxy = 7D0000000000000000000121 /* PBXContainerItemProxy */;
+		};
+		7D0000000000000000000122 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7D0000000000000000000110 /* TodosShare */;
+			targetProxy = 7D0000000000000000000123 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -275,6 +435,7 @@
 				CODE_SIGN_ENTITLEMENTS = Config/Todos.entitlements;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/Todos-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Todos;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
@@ -301,6 +462,7 @@
 				CODE_SIGN_ENTITLEMENTS = Config/Todos.entitlements;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/Todos-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Todos;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
@@ -343,6 +505,82 @@
 			};
 			name = Release;
 		};
+		7D0000000000000000000141 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Config/TodosWidget.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/TodosWidget-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Todos;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.abhishekpratapa.todos.ios.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		7D0000000000000000000142 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Config/TodosWidget.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/TodosWidget-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Todos;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.abhishekpratapa.todos.ios.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+		7D0000000000000000000151 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Config/TodosShare.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/TodosShare-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Todos;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.abhishekpratapa.todos.ios.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		7D0000000000000000000152 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Config/TodosShare.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/TodosShare-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Todos;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.abhishekpratapa.todos.ios.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -373,6 +611,24 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		7D0000000000000000000140 /* Build configuration list for PBXNativeTarget "TodosWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7D0000000000000000000141 /* Debug */,
+				7D0000000000000000000142 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7D0000000000000000000150 /* Build configuration list for PBXNativeTarget "TodosShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7D0000000000000000000151 /* Debug */,
+				7D0000000000000000000152 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -384,6 +640,14 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		7D0000000000000000000081 /* TodosKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TodosKit;
+		};
+		7D0000000000000000000085 /* TodosKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TodosKit;
+		};
+		7D0000000000000000000087 /* TodosKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = TodosKit;
 		};

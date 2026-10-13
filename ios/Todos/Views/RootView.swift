@@ -19,11 +19,16 @@ struct RootView: View {
                 MainView()
             }
         }
-        .task { await model.start() }
+        .task {
+            await model.start()
+            await model.activate()
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active: Task { await model.activate() }
-            case .background: model.deactivate()
+            case .background:
+                model.deactivate()
+                BackgroundRefresh.schedule() // ask iOS to wake the app now and then to refresh
             default: break
             }
         }
@@ -34,12 +39,22 @@ struct MainView: View {
     @Environment(AppModel.self) private var model
     @State private var capturing = false
     @State private var showingSettings = false
+    @State private var path: [Int] = []
 
     var body: some View {
         @Bindable var model = model
-        NavigationStack {
+        NavigationStack(path: $path) {
             TaskListView(showingSettings: $showingSettings)
                 .navigationDestination(for: Int.self) { TaskDetailView(taskID: $0) }
+        }
+        // A reminder or the widget was tapped: go to that task.
+        .onChange(of: model.requestedTask, initial: true) { _, task in
+            guard let task else { return }
+            model.requestedTask = nil
+            capturing = false
+            showingSettings = false
+            model.isShowingSync = false
+            path = [task]
         }
         .overlay(alignment: .bottom) {
             if let notice = model.notice {

@@ -8,6 +8,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingUnpair = false
     @State private var retrying = false
+    @State private var remindersOn = Reminders.shared.isEnabled
+    @State private var remindersRefused = false
 
     var body: some View {
         NavigationStack {
@@ -70,6 +72,28 @@ struct SettingsView: View {
                             .disabled(retrying)
                         }
                     }
+                }
+
+                Section {
+                    Toggle("Reminders on This iPhone", isOn: $remindersOn)
+                        .onChange(of: remindersOn) { _, on in
+                            Task {
+                                let accepted = await Reminders.shared.setEnabled(on, tasks: model.tasks)
+                                remindersRefused = on && !accepted
+                                if !accepted { remindersOn = false }
+                            }
+                        }
+                    if remindersRefused {
+                        Button("Allow Notifications in Settings…") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        }
+                    }
+                } header: {
+                    Text("Reminders")
+                } footer: {
+                    Text(remindersRefused
+                        ? "Notifications are turned off for Todos on this iPhone, so reminders can’t be shown."
+                        : "Reminders are scheduled on this iPhone from your list, so they arrive even when your Mac is asleep. To be reminded only once, turn off Reminder Notifications on This Mac in the Todos menu on your Mac.")
                 }
 
                 Section {

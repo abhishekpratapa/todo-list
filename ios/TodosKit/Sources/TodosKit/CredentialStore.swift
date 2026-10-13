@@ -49,6 +49,23 @@ public struct KeychainCredentialStore: CredentialStore {
         return q
     }
 
+    /// The store the app and its share extension both use.
+    public static var shared: KeychainCredentialStore {
+        KeychainCredentialStore(accessGroup: SharedContainer.keychainGroup)
+    }
+
+    /// Earlier builds kept the item in the app's own Keychain group, where an extension
+    /// can't read it. Moves it to the shared group, once. Returns true if it moved one.
+    @discardableResult
+    public static func moveToSharedGroup(from appGroup: String, service: String = KeychainCredentialStore.defaultService) -> Bool {
+        let old = KeychainCredentialStore(service: service, accessGroup: appGroup)
+        let new = KeychainCredentialStore(service: service, accessGroup: SharedContainer.keychainGroup)
+        guard let found = try? old.load(), (try? new.load()) == nil else { return false }
+        guard (try? new.save(found)) != nil else { return false }
+        try? old.clear()
+        return true
+    }
+
     public func load() throws -> HubCredentials? {
         var q = query
         q[kSecReturnData] = true

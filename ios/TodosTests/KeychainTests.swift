@@ -59,6 +59,25 @@ struct KeychainTests {
         #expect(try KeychainCredentialStore(service: service, account: "other").load() == nil)
     }
 
+    @Test("the share extension's group works, and an item from an earlier build is moved into it once")
+    func sharedGroup() throws {
+        let own = KeychainCredentialStore(service: service, accessGroup: "N3366NR59J.com.abhishekpratapa.todos.ios")
+        let shared = KeychainCredentialStore(service: service, accessGroup: SharedContainer.keychainGroup)
+        defer {
+            try? own.clear()
+            try? shared.clear()
+        }
+        #expect(KeychainCredentialStore.moveToSharedGroup(from: "N3366NR59J.com.abhishekpratapa.todos.ios", service: service) == false, "nothing to move")
+
+        let credentials = Self.credentials()
+        try own.save(credentials) // where builds before the share extension kept it
+        #expect(try shared.load() == nil)
+        #expect(KeychainCredentialStore.moveToSharedGroup(from: "N3366NR59J.com.abhishekpratapa.todos.ios", service: service))
+        #expect(try shared.load() == credentials)
+        #expect(try own.load() == nil, "moved, not copied")
+        #expect(KeychainCredentialStore.moveToSharedGroup(from: "N3366NR59J.com.abhishekpratapa.todos.ios", service: service) == false, "and only once")
+    }
+
     @Test("an item this app can't make sense of counts as not paired, and pairing replaces it")
     func unreadable() throws {
         defer { try? store.clear() }

@@ -102,6 +102,8 @@ To connect it, choose **Remote Access → Pair iPhone…** on the Mac and scan t
 
 ### Add tasks from an iOS Shortcut
 
+With the iPhone app installed, use its own **Add Task** action in Shortcuts instead (see `ios/README.md`): it needs no token in the shortcut and also works when the Mac can't be reached. The steps below are for a shortcut that talks to the Mac directly, without the app.
+
 The quick-capture endpoint takes one line, read exactly as ⌃⌥T reads it.
 
 1. In Shortcuts, create a shortcut with **Ask for Input** (Text, prompt "New task"). Use **Dictate Text** instead if you'd rather speak it.
@@ -158,13 +160,14 @@ The check icon in the menu bar shows how many tasks are overdue or due today. Cl
 - **Subtasks**: add a checklist to any task in its details. The card shows progress (for example 2/5), and Claude can add and check off subtasks too.
 - **Markdown notes**: notes render as Markdown (headings, bold, lists, task lists, code, quotes) with clickable links. Click the notes or **Edit** to change them. Links in comments are clickable too.
 - **Repeating tasks**: set **Repeat** to daily, every weekday, weekly, every 2 weeks, monthly, or yearly. Completing the task creates the next occurrence with the next due date and a fresh checklist. The finished one stays in Done as history.
-- **Reminders**: set **Remind me** to a date and time to get a Mac notification then. Click the notification to open the task. Reminders missed while the app was closed arrive when it next opens. Reminders only fire while the app is running, so turn on **Launch at Login** if you rely on them.
+- **Reminders**: set **Remind me** to a date and time to get a Mac notification then. If you get your reminders on the iPhone app instead, turn off **Todos → Reminder Notifications on This Mac** so you aren't reminded twice; the reminder still shows in the Todos window. Click the notification to open the task. Reminders missed while the app was closed arrive when it next opens. Reminders only fire while the app is running, so turn on **Launch at Login** if you rely on them.
 - **Daily summary**: at 9 AM (or when the app first opens after that) you get one notification listing what's due today and overdue. Turn it off with **Todos → Daily Summary at 9 AM**.
 - **Search**: press `⌘F` or `/`. Press `Esc` to close panels.
 - **Live changes**: cards that Claude changes flash briefly. The activity log shows which session made each change, for example "Claude Code · my-repo" or "Cowork".
 - **Dock badge**: shows how many tasks are overdue or due today.
 - **App menu**:
   - **Todos → Launch at Login**
+  - **Todos → Reminder Notifications on This Mac**
   - **Todos → Daily Summary at 9 AM**
   - **Todos → Send Test Notification**: use this to check that macOS is allowing notifications from Todos. If nothing appears, allow them in System Settings → Notifications → Todos. Reminders also show as a banner inside the app window either way.
   - **File → Open in Browser**: the dashboard is also at http://127.0.0.1:7420 while the app runs.

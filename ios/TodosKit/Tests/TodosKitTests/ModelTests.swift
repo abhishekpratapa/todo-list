@@ -31,6 +31,13 @@ struct ModelTests {
         #expect(HubJSON.parseDate("2026-10-05T14:58:12Z") == Date(timeIntervalSince1970: 1_791_212_292))
         #expect(HubJSON.parseDate("yesterday") == nil)
         #expect(HubJSON.string(from: Date(timeIntervalSince1970: 1_791_212_292.345)) == "2026-10-05T14:58:12.345Z")
+        // Written to the nearest millisecond, so a time read back is the time that was written.
+        for millis in stride(from: 0, to: 1000, by: 37) {
+            let date = Date(timeIntervalSince1970: 1_791_212_292 + Double(millis) / 1000)
+            let text = HubJSON.string(from: date)
+            #expect(text == String(format: "2026-10-05T14:58:12.%03dZ", millis))
+            #expect(HubJSON.string(from: HubJSON.parseDate(text)!) == text)
+        }
     }
 
     @Test("a task in a list has a comment count instead of its history")

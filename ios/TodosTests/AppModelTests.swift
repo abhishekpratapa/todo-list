@@ -109,7 +109,9 @@ struct AppModelTests {
         let relaunched = launch()
         await relaunched.start()
         #expect(relaunched.phase == .paired)
-        #expect(relaunched.hasLoaded, "there is a list to show at once")
+        #expect(relaunched.hasLoaded, "there is a list to show at once, before anything is asked of the network")
+        #expect(mac.requests.allSatisfy { _ in true } && relaunched.issue == nil)
+        await relaunched.activate()
         #expect(relaunched.tasks.map(\.title) == ["Renew passport", "Done already"])
         #expect(relaunched.task(1)?.notes == "Bring **photos**")
         #expect(relaunched.task(1)?.activity?.contains { $0.text == "Form is filled in." } == true, "comments can be read offline")
@@ -343,6 +345,71 @@ struct AppModelTests {
         mac.isUnreachable = false
         #expect(await relaunched.pair(credentials) == nil)
         #expect(relaunched.changes.isEmpty && mac.all.map(\.title) == ["Renew passport"], "nothing left over was sent")
+    }
+
+    // MARK: From outside the app
+
+    @Test("a task added by a Shortcut is saved at once, and the answer says whether it reached the Mac")
+    func shortcut() async throws {
+        defer { cleanUp() }
+        _ = await paired()
+
+        // A Shortcut can run when the app isn't open: a fresh launch, in the background.
+        let background = launch()
+        #expect(await { if case .added = await background.captureFromOutside("Buy milk tomorrow") { true } else { false } }())
+        #expect(mac.all.map(\.title) == ["Buy milk tomorrow"])
+
+        mac.isUnreachable = true
+        #expect(await { if case .waiting = await background.captureFromOutside("Buy eggs", waitingAtMost: 1) { true } else { false } }())
+        #expect(background.waitingAdditions.map(\.capturedLine) == ["Buy eggs"], "kept for when the Mac is back")
+
+        mac.isUnreachable = false
+        await background.retry()
+        #expect(mac.all.map(\.title).sorted() == ["Buy eggs", "Buy milk tomorrow"])
+    }
+
+    @Test("a Shortcut run before pairing says so, and saves nothing")
+    func shortcutUnpaired() async throws {
+        defer { cleanUp() }
+        let model = launch()
+        #expect(await { if case .notPaired = await model.captureFromOutside("Too early") { true } else { false } }())
+        #expect(model.changes.isEmpty && mac.all.isEmpty)
+    }
+
+    @Test("a task added from the share sheet while the app was away is found and sent when the app returns")
+    func sharedWhileAway() async throws {
+        defer { cleanUp() }
+        let model = await paired()
+        // The share extension is another process writing to the same folder.
+        let folder = try #require(SharedContainer.currentHubDirectory(in: directory))
+        let extensionStore = LocalStore(directory: folder)
+        await extensionStore.add(.add(title: "An article to read", notes: "https://example.com/article"))
+        #expect(model.changes.isEmpty, "the app hasn't looked yet")
+
+        await model.activate()
+        #expect(model.changes.isEmpty)
+        #expect(mac.all.map(\.title) == ["An article to read"] && mac.all.first?.notes == "https://example.com/article")
+        #expect(model.tasks.map(\.title) == ["An article to read"])
+    }
+
+    @Test("whatever is on screen is handed on for reminders and the widget, and the widget can find the list")
+    func handsOn() async throws {
+        defer { cleanUp() }
+        mac.add("Call back") { $0.remindAt = Date().addingTimeInterval(3600) }
+        let model = launch()
+        var handed: [[TodoTask]] = []
+        model.didReload = { handed.append($0) }
+        #expect(await model.pair(credentials) == nil)
+        #expect(handed.last?.map(\.title) == ["Call back"])
+        #expect(ReminderPlan.plan(for: handed.last ?? []).map(\.title) == ["Call back"])
+
+        // The widget reads the same folder the app writes.
+        let folder = try #require(SharedContainer.currentHubDirectory(in: directory))
+        #expect(LocalStore.read(directory: folder).list.tasks.map(\.title) == ["Call back"])
+
+        await model.unpair(erasingData: true)
+        #expect(handed.last?.isEmpty == true, "unpairing clears reminders and the widget")
+        #expect(SharedContainer.currentHubDirectory(in: directory) == nil)
     }
 
     @Test("a different Mac never sees the first one's list or waiting changes")

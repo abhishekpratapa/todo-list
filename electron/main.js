@@ -174,6 +174,7 @@ const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 const settings = {
   dailySummary: true,
   lastSummaryDate: null,
+  reminderNotifications: true, // off for someone who gets their reminders on the iPhone instead
   captureShortcut: 'Control+Alt+T',
   showTray: true,
   claudeNotifications: true,
@@ -577,16 +578,19 @@ function checkReminders() {
   const due = pendingReminders(todos);
   if (due.length) {
     markReminded(due.map((t) => t.id)); // first, so a crash can't deliver the same reminder twice
+    // With "Reminder Notifications on This Mac" off, the reminder is still marked as
+    // delivered and still shows in the window, but nothing pops up or bounces here.
+    const announce = settings.reminderNotifications;
     if (due.length <= 3) {
       for (const t of due) {
-        notify({ title: t.title, body: `Reminder${dueLabel(t.due, t0)}`, onClick: () => runInPage(`window.todos.open(${t.id})`) });
+        if (announce) notify({ title: t.title, body: `Reminder${dueLabel(t.due, t0)}`, onClick: () => runInPage(`window.todos.open(${t.id})`) });
         // Also show it in the window, in case system notifications are turned off.
         if (win) win.webContents.executeJavaScript(`window.todos?.remind(${t.id}, ${JSON.stringify(t.title)})`).catch(() => {});
       }
-    } else {
+    } else if (announce) {
       notify({ title: `${due.length} reminders`, body: due.map((t) => t.title).join(', '), onClick: showWindow });
     }
-    app.dock?.bounce('informational');
+    if (announce) app.dock?.bounce('informational');
   }
 
   if (settings.dailySummary && settings.lastSummaryDate !== t0 && new Date().getHours() >= SUMMARY_HOUR) {
@@ -659,6 +663,15 @@ function buildMenu() {
           type: 'checkbox',
           checked: app.getLoginItemSettings().openAtLogin,
           click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+        },
+        {
+          label: 'Reminder Notifications on This Mac',
+          type: 'checkbox',
+          checked: settings.reminderNotifications,
+          click: (item) => {
+            settings.reminderNotifications = item.checked;
+            saveSettings();
+          },
         },
         {
           label: 'Daily Summary at 9 AM',

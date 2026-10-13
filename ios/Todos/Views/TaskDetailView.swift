@@ -94,7 +94,9 @@ private struct TaskDetailForm: View {
                 }
             } footer: {
                 if task.remindAt != nil {
-                    Text("Reminders appear on your Mac.")
+                    Text(Reminders.shared.isEnabled
+                        ? "You’ll be reminded on this iPhone."
+                        : "Reminders appear on your Mac. To get them here too, turn on Reminders on This iPhone in Settings.")
                 }
             }
 

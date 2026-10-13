@@ -50,6 +50,8 @@ final class AppModel {
     var notice: Notice?
     /// Set by any screen to show the Sync screen: what is waiting, and what needs a decision.
     var isShowingSync = false
+    /// A task to open: set when a reminder or the widget is tapped.
+    var requestedTask: Int?
 
     @ObservationIgnored private let credentials: any CredentialStore
     @ObservationIgnored private let makeClient: (HubCredentials) -> HubClient
@@ -74,7 +76,7 @@ final class AppModel {
         credentials: any CredentialStore = KeychainCredentialStore(),
         makeClient: @escaping (HubCredentials) -> HubClient = { HubClient(credentials: $0) },
         liveStates: @escaping (HubClient) -> AsyncStream<LiveState> = { LiveUpdates(client: $0).states() },
-        dataDirectory: URL = AppModel.sharedDataDirectory
+        dataDirectory: URL = SharedContainer.directory
     ) {
         self.credentials = credentials
         self.makeClient = makeClient
@@ -82,18 +84,14 @@ final class AppModel {
         self.dataDirectory = dataDirectory
     }
 
-    /// Where the list and waiting changes are kept: the app group's container, which
-    /// the widget and extensions can read too. (Outside a signed app there is no
-    /// such container, so the app's own folder is used.)
-    static let appGroup = "group.com.abhishekpratapa.todos"
-    static var sharedDataDirectory: URL {
-        let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Todos", isDirectory: true)
-    }
+    /// Called whenever what is on screen has been worked out afresh, with the tasks as shown.
+    /// The app uses it to reschedule reminders and refresh the widget.
+    @ObservationIgnored var didReload: (@MainActor ([TodoTask]) async -> Void)?
 
     // MARK: Pairing
 
+    /// Loads the pairing and the list kept on this iPhone. It does not connect: `activate` does,
+    /// when the app is on screen. Safe to call more than once.
     func start() async {
         guard phase == .launching else { return }
         let saved: HubCredentials?
@@ -108,7 +106,6 @@ final class AppModel {
             return
         }
         await adopt(saved, makeClient(saved))
-        await activate()
     }
 
     /// Tries an address and token against the Mac, and keeps them only if they work.
@@ -137,8 +134,8 @@ final class AppModel {
     /// the same Mac (after its token was rotated, say) finds the list and any waiting
     /// changes still there; pairing with a different Mac never sees them.
     private func adopt(_ new: HubCredentials, _ client: HubClient) async {
-        let folder = String(new.address.description.map { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" ? $0 : "_" })
-        let store = LocalStore(directory: dataDirectory.appendingPathComponent("Hubs", isDirectory: true).appendingPathComponent(folder, isDirectory: true))
+        let store = LocalStore(directory: SharedContainer.hubDirectory(for: new.address, in: dataDirectory))
+        SharedContainer.setCurrentHub(new.address, in: dataDirectory)
         self.client = client
         self.store = store
         engine = SyncEngine(client: client, store: store)
@@ -159,6 +156,7 @@ final class AppModel {
             log.error("could not clear the Keychain")
         }
         if erasingData { await store?.erase() }
+        SharedContainer.setCurrentHub(nil, in: dataDirectory)
         client = nil
         store = nil
         engine = nil
@@ -173,6 +171,7 @@ final class AppModel {
         query = TaskQuery()
         compatibilityChecked = false
         phase = .unpaired
+        await didReload?([])
     }
 
     // MARK: Connection
@@ -180,7 +179,19 @@ final class AppModel {
     /// The app came to the front: connect for live updates, send what is waiting, load the list.
     func activate() async {
         guard phase == .paired else { return }
+        await store?.reloadChanges() // the share sheet may have added some while the app was away
+        await reload()
         startLive()
+        await sync()
+    }
+
+    /// A background refresh from iOS: bring the list up to date (and with it the reminders
+    /// and the widget) without opening a live connection.
+    func refreshInBackground() async {
+        await start()
+        guard phase == .paired else { return }
+        await store?.reloadChanges()
+        compatibilityChecked = false
         await sync()
     }
 
@@ -362,6 +373,7 @@ final class AppModel {
         tasks = list.tasks.applying(changes).inListOrder()
         lastSynced = list.syncedAt
         hasLoaded = list.syncedAt != nil
+        await didReload?(tasks)
     }
 
     // MARK: Changes
@@ -482,6 +494,30 @@ final class AppModel {
         } else {
             notice = Notice(text: "Added")
         }
+    }
+
+    enum CaptureOutcome {
+        case added, waiting, notPaired
+        case refused(String)
+    }
+
+    /// Quick capture from outside the app (Shortcuts, Siri, the Action button). The line is
+    /// saved at once; this then waits a few seconds to see whether it reached the Mac, so
+    /// the answer can say which.
+    func captureFromOutside(_ line: String, waitingAtMost seconds: Double = 8) async -> CaptureOutcome {
+        await start()
+        guard phase == .paired, let store else { return .notPaired }
+        let change = await store.add(.capture(line: line))
+        await reload()
+        let sending = Task { await self.send() }
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline, changes.contains(where: { $0.id == change.id && $0.isWaiting }), issue == nil {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        _ = sending
+        guard let still = changes.first(where: { $0.id == change.id }) else { return .added }
+        if case .rejected(let message) = still.state { return .refused(message) }
+        return .waiting
     }
 
     /// How the Mac would read a line, for showing while typing. Nil if it can't be asked.

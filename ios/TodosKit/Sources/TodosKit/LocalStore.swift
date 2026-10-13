@@ -29,7 +29,7 @@ public struct CachedList: Codable, Sendable, Equatable {
 }
 
 public actor LocalStore {
-    private struct CacheFile: Codable {
+    struct CacheFile: Codable {
         var schema: Int
         var list: CachedList
     }

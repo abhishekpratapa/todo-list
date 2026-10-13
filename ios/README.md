@@ -2,17 +2,19 @@
 
 A native iPhone app for the list kept by the Todos app on your Mac. The Mac stays the only copy: the iPhone reaches it over your Tailscale tailnet, through the same `/api/v1` any other client uses (`docs/openapi.json`).
 
-It does pairing, the task list and detail, editing, quick capture and live updates, and it keeps working without a connection: the list is kept on the iPhone, and changes made offline are sent when the Mac can be reached again. Notifications, a widget and Shortcuts come in a later phase.
+It does pairing, the task list and detail, editing, quick capture and live updates, and it keeps working without a connection: the list is kept on the iPhone, and changes made offline are sent when the Mac can be reached again. It also has reminders as notifications on the iPhone, a widget, a Shortcuts action (for Siri and the Action button too) and a share sheet extension.
 
 ```
 Todos.xcodeproj   the Xcode project (app and its tests)
 Todos/            the app: SwiftUI views and AppModel, the state they share
+TodosWidget/      the home screen and lock screen widget
+TodosShare/       the share sheet extension
 TodosTests/       tests that run inside the app: Keychain storage, pairing, offline use
 TodosKit/         a Swift package with everything that has no user interface:
                   the API client, live updates, pairing codes, Keychain storage,
                   the list kept on disk, the queue of changes and how it is sent
                   and merged, version checks, connection diagnosis, Markdown
-Config/           the app's entitlements (its app group)
+Config/           entitlements and Info.plist additions for the app and its two extensions
 scripts/          install.sh, test.sh, simulator.sh, and the Todos server the tests run against
 ```
 
@@ -50,7 +52,7 @@ There are no third-party dependencies.
 ios/scripts/install.sh
 ```
 
-This builds the app, signs it, installs it on the connected iPhone and opens it. Signing is automatic: the first run registers the iPhone, the app's identifier (`com.abhishekpratapa.todos.ios`) and its app group (`group.com.abhishekpratapa.todos`) with your developer account and creates a development provisioning profile; later runs reuse them.
+This builds the app with its widget and share extension, signs them, installs them on the connected iPhone and opens the app. Signing is automatic: the first run registers the iPhone, three identifiers (`com.abhishekpratapa.todos.ios`, and the same with `.widget` and `.share` on the end) and the app group (`group.com.abhishekpratapa.todos`) with your developer account, and creates development provisioning profiles; later runs reuse them.
 
 A development build does not last for ever: it stops opening when its provisioning profile expires (a year after it was made), and possibly sooner if the Apple Development certificate it was signed with expires first. If the app stops opening, run the script again: it renews what has expired and puts a fresh build on the phone. Your list is on the Mac and the token is in the Keychain, so nothing is lost. To see the profile's date:
 
@@ -98,6 +100,34 @@ The token is checked against the Mac before it is kept, and then stored in the i
 - **Start with Claude** is only in the Mac app, so it isn't shown here. You can still assign a task to Claude.
 - Your changes appear in a task's history on the Mac as "You · iPhone".
 
+### Reminders on the iPhone
+
+Turn on **Settings → Reminders on This iPhone** in the app (the gear at the top left) and allow notifications when iOS asks. From then on, every reminder in your list is scheduled on the iPhone itself, so it arrives even when your Mac is asleep or out of reach. Tapping one opens its task.
+
+- Reminders are scheduled from the list the iPhone has. One set on the Mac reaches the phone the next time the app updates: at once if the app is open, otherwise when iOS next gives it a background refresh (iOS decides when; opening the app always does it).
+- To be reminded only once, turn off **Todos → Reminder Notifications on This Mac** on the Mac. Each device has its own switch, so you choose where reminders appear.
+- iOS keeps at most 64 pending notifications for an app, so the 60 soonest are scheduled and the rest follow as those fire.
+
+### Widget
+
+Touch and hold the home screen, tap **Edit → Add Widget**, and choose **Todos**. It comes in small and medium sizes and as a lock screen widget, and shows what is due today and overdue. Tapping a task opens it.
+
+The widget reads the list kept on the iPhone, with your waiting changes applied, so it shows what the app shows. It does not contact the Mac itself: it updates when the app does, and at midnight.
+
+### Shortcuts, Siri and the Action button
+
+The app adds an **Add Task** action to Shortcuts. It takes one line, read exactly like quick capture.
+
+- **Siri:** "Add a task in Todos", then say the task.
+- **Action button:** Settings → Action Button → Shortcut → choose **Add Task** under Todos.
+- **Shortcuts:** use **Add Task** in any shortcut, for example after **Dictate Text**.
+
+If the Mac can't be reached, the line is saved on the iPhone and added later, and the answer says so. This replaces the Shortcut described in the main README that calls the Mac directly, and unlike that one it needs no token in the shortcut.
+
+### Share sheet
+
+In Safari or any app, tap **Share → Todos** to make a task from a link or some text. A link becomes the task's notes, under the page's title; you can edit both before adding. The task is added as written, not read as a quick-capture line, so a title containing "fri" or "#3" stays as it is. (If Todos isn't in the row of apps, tap **More** and turn it on.)
+
 ### If it can't connect
 
 The app says what is wrong and what to do:
@@ -132,7 +162,7 @@ ios/scripts/test.sh
 That runs two things:
 
 1. **TodosKit** with `swift test`, on the Mac. The unit tests cover the API client, version checks, live-update parsing, pairing codes, connection diagnosis, list grouping, Markdown, the list kept on disk, the queue of changes and its replay, and conflict detection and merging. The integration tests start a real Todos server (`ios/scripts/test-server.mjs`, the Mac app's own server code) and cover CRUD, quick capture, live updates, conflicts, a revoked token, remote access being off and the wrong Tailscale account. They also cover offline use: an edit made offline while the Mac edits the same task ends with nothing lost, a line captured offline is read as of when it was typed and added once even if sent twice, and changes keep waiting through a rotated token or an unreachable Mac.
-2. **The app's tests** in the iOS Simulator: Keychain storage, pairing, opening with no connection, changes made offline and sent later, conflicts and how they are settled, and unpairing.
+2. **The app's tests** in the iOS Simulator: Keychain storage (including the group shared with the share extension), pairing, opening with no connection, changes made offline and sent later, conflicts and how they are settled, unpairing, tasks added by a Shortcut or the share sheet, and what the widget and reminders are given.
 
 The integration tests never touch your real list. The server they start uses a data directory created fresh in the system's temporary folder and deleted afterwards, with its own access token.
 
@@ -153,4 +183,6 @@ This runs the app in the iOS Simulator against the same throwaway server the int
 - Nothing is cached by the networking layer: no cookies, no URL cache.
 - The copy of the list and the changes waiting to be sent are files in the app's own app-group container. iOS encrypts them with the device's passcode; they can be read once the iPhone has been unlocked after a restart. Each Mac has its own folder, so pairing with a different Mac never shows the first one's list. **Unpair This iPhone** deletes them.
 - The pairing QR code carries the token itself. The Mac shows it only in its own window, leaves that window out of screenshots and screen sharing, and closes it after a minute.
+- The share extension sends what it adds, so it needs the token. The app and that extension share one Keychain group (`N3366NR59J.com.abhishekpratapa.todos.shared`); nothing else can read it. The widget has no access to the token and never uses the network.
+- Reminder notifications show a task's title on the lock screen, like any notification. iOS's own notification settings for Todos control that.
 - No signing keys, certificates or provisioning profiles are in the repository; `.gitignore` keeps them out. The team identifier in the project file is not a secret.

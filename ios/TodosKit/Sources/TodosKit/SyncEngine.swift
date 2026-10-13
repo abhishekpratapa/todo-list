@@ -71,6 +71,13 @@ public struct SyncEngine: Sendable {
                 await setAside(change, error)
             }
 
+        case .add(let title, let notes):
+            do {
+                await finish(change, try await client.create(like: TodoTask(id: 0, title: title, notes: notes), key: change.id))
+            } catch let error as HubError where error.isAboutThisChange {
+                await setAside(change, error)
+            }
+
         case .update(let task, let baseRev, let base, let patch):
             try await sendUpdate(change, task: task, baseRev: baseRev, base: base, patch: patch)
 

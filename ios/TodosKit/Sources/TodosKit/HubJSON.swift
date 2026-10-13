@@ -11,8 +11,10 @@ enum HubJSON {
         (try? withFraction.parse(text)) ?? (try? withoutFraction.parse(text))
     }
 
+    /// To the nearest millisecond. The formatter cuts off rather than rounds, and a time
+    /// like 12.124 s is often stored as 12.12399999, so half a millisecond is added first.
     static func string(from date: Date) -> String {
-        withFraction.format(date)
+        withFraction.format(date.addingTimeInterval(0.0005))
     }
 
     static func decoder() -> JSONDecoder {
