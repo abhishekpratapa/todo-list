@@ -40,7 +40,13 @@ test('the packaged app starts in the background with the command-line tool insid
   await app.click('install-cli');
   assert.ok(await until(() => app.lines().includes('command line tool: installed'), 15_000));
   assert.equal(fs.readlinkSync(link), inside);
-  assert.equal(execFileSync(link, { encoding: 'utf8' }), execFileSync(inside, { encoding: 'utf8' }));
+  // Run through the link, it reaches this copy of the app. It is pointed at this
+  // copy's socket and a config folder of its own: left to itself it would ask
+  // the installed app, which these tests never touch.
+  const own = { encoding: 'utf8', env: { ...process.env, TODOS_SOCKET: app.socketPath, XDG_CONFIG_HOME: path.join(app.root, 'config') } };
+  assert.equal(execFileSync(link, ['version'], own), execFileSync(inside, ['version'], own));
+  const status = JSON.parse(execFileSync(link, ['status', '--json'], own));
+  assert.deepEqual([status.profile, status.transport, status.address, status.appVersion], ['local', 'socket', app.socketPath, version]);
   assert.deepEqual((await app.state()).menu, { install: false, uninstall: true });
 
   await app.click('uninstall-cli');
