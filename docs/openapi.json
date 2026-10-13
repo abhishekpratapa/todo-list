@@ -1,0 +1,2512 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Todos API",
+    "version": "1",
+    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible in the app on the Mac itself.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
+  },
+  "servers": [
+    {
+      "url": "https://{mac}.{tailnet}.ts.net/api/v1",
+      "variables": {
+        "mac": {
+          "default": "your-mac"
+        },
+        "tailnet": {
+          "default": "your-tailnet"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    },
+    {
+      "sessionCookie": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks"
+    },
+    {
+      "name": "Subtasks"
+    },
+    {
+      "name": "Comments and history"
+    },
+    {
+      "name": "Quick capture"
+    },
+    {
+      "name": "Overview"
+    },
+    {
+      "name": "Session"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "Is the server there?",
+        "description": "Needs no authentication and reveals nothing else.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The server is running and Remote Access is on.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "const": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/session": {
+      "post": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "Sign a browser in",
+        "description": "Exchanges the access token for a session cookie (HttpOnly, SameSite=Strict, Secure over HTTPS, 90 days). API clients do not need this: send the bearer token on each request instead.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in. The cookie is in Set-Cookie.",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "Who am I?",
+        "responses": {
+          "200": {
+            "description": "The kind of session making this request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "remote",
+                        "api",
+                        "app"
+                      ],
+                      "description": "remote: a signed-in browser. api: a bearer token. app: the Mac app's own window."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "Sign a browser out",
+        "responses": {
+          "200": {
+            "description": "The cookie has been cleared.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "tags": [
+          "Overview"
+        ],
+        "summary": "Live updates",
+        "description": "A server-sent event stream. Sends `hello` on connect and `change` whenever anything in the list changes, each with `{\"version\": n}`. Fetch what you need again when one arrives. A comment line arrives every 25 seconds to keep the connection open. Browsers must rely on the cookie here, since EventSource cannot send headers.",
+        "responses": {
+          "200": {
+            "description": "The event stream.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Too many live connections are open.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks": {
+      "get": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "List, filter and search tasks",
+        "description": "Sorted like the dashboard: in progress, blocked, to do, then done; within each by priority, then due date. Tasks in a list leave out their activity log and carry a `comments` count instead.",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "open"
+            },
+            "description": "open (everything not done), all, or any of todo, in_progress, blocked, done. Several can be given, separated by commas."
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "high, medium, low. Several can be given, separated by commas."
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact project name, ignoring case. An empty value lists tasks with no project."
+          },
+          {
+            "name": "assignee",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "me",
+                "claude"
+              ]
+            }
+          },
+          {
+            "name": "due",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "overdue, today, week (today through the next 7 days), none (no due date), any (has one), or a date YYYY-MM-DD for everything due on or before it."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Words that must all appear in the title, notes, project, tags or subtasks."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The matching tasks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tasks": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskSummary"
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "How many tasks match, before limit and offset."
+                    },
+                    "summary": {
+                      "$ref": "#/components/schemas/Counts"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Create a task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 500
+                  },
+                  "notes": {
+                    "type": "string",
+                    "description": "Markdown."
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "todo",
+                      "in_progress",
+                      "blocked",
+                      "done"
+                    ]
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
+                  },
+                  "due": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "YYYY-MM-DD. Also accepted on input: today, tomorrow, +3d, a weekday name, \"oct 20\". null clears it."
+                  },
+                  "project": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "assignee": {
+                    "type": "string",
+                    "enum": [
+                      "me",
+                      "claude"
+                    ]
+                  },
+                  "repeat": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "daily",
+                      "weekdays",
+                      "weekly",
+                      "biweekly",
+                      "monthly",
+                      "yearly",
+                      null
+                    ],
+                    "description": "Completing a repeating task creates its next occurrence."
+                  },
+                  "remindAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time",
+                    "description": "When the Mac shows a reminder. Also accepted on input: \"YYYY-MM-DD HH:MM\" (the Mac's local time), \"tomorrow 9am\", \"+2h\"."
+                  },
+                  "subtasks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Titles for an initial checklist."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new task.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Task id."
+        }
+      ],
+      "get": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Get one task",
+        "description": "Includes its notes, subtasks and full activity log.",
+        "responses": {
+          "200": {
+            "description": "The task.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Edit a task",
+        "description": "Only the fields you send change. Needs the revision the edit is based on. Setting status to done on a repeating task also creates the next occurrence, returned as `next`.",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The rev of the task this change is based on, as returned in the ETag header or task.rev, e.g. \"3\". Use * to overwrite regardless.",
+            "example": "\"3\""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 500
+                  },
+                  "notes": {
+                    "type": "string",
+                    "description": "Markdown."
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "todo",
+                      "in_progress",
+                      "blocked",
+                      "done"
+                    ]
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
+                  },
+                  "due": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "YYYY-MM-DD. Also accepted on input: today, tomorrow, +3d, a weekday name, \"oct 20\". null clears it."
+                  },
+                  "project": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "assignee": {
+                    "type": "string",
+                    "enum": [
+                      "me",
+                      "claude"
+                    ]
+                  },
+                  "repeat": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "daily",
+                      "weekdays",
+                      "weekly",
+                      "biweekly",
+                      "monthly",
+                      "yearly",
+                      null
+                    ],
+                    "description": "Completing a repeating task creates its next occurrence."
+                  },
+                  "remindAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time",
+                    "description": "When the Mac shows a reminder. Also accepted on input: \"YYYY-MM-DD HH:MM\" (the Mac's local time), \"tomorrow 9am\", \"+2h\"."
+                  },
+                  "rev": {
+                    "type": "integer",
+                    "description": "Alternative to the If-Match header."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The task after the edit.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    "next": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/Task"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The next occurrence, when a repeating task was completed."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The task has changed since the revision you sent. error.current is the task as it is now; nothing was changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "An edit or delete was sent without a revision. Send If-Match with the task's rev.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Delete a task",
+        "description": "Permanent. Needs the revision, like an edit (If-Match, or ?rev=).",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The rev of the task this change is based on, as returned in the ETag header or task.rev, e.g. \"3\". Use * to overwrite regardless.",
+            "example": "\"3\""
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The task has changed since the revision you sent. error.current is the task as it is now; nothing was changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "An edit or delete was sent without a revision. Send If-Match with the task's rev.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}/complete": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Task id."
+        }
+      ],
+      "post": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Mark a task done",
+        "description": "Needs no revision. A repeating task's next occurrence is created and returned as `next`.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "comment": {
+                    "type": "string",
+                    "description": "A closing comment for the activity log."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The completed task.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    "next": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/Task"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}/subtasks": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Task id."
+        }
+      ],
+      "post": {
+        "tags": [
+          "Subtasks"
+        ],
+        "summary": "Add subtasks",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "titles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The task with the new subtasks appended.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}/subtasks/{subtaskId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Task id."
+        },
+        {
+          "name": "subtaskId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Subtask id, unique within its task."
+        }
+      ],
+      "patch": {
+        "tags": [
+          "Subtasks"
+        ],
+        "summary": "Check, uncheck or rename a subtask",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "done": {
+                    "type": "boolean"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The task after the change.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Subtasks"
+        ],
+        "summary": "Remove a subtask",
+        "responses": {
+          "200": {
+            "description": "The task without that subtask.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}/comments": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Task id."
+        }
+      ],
+      "post": {
+        "tags": [
+          "Comments and history"
+        ],
+        "summary": "Add a comment",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "Markdown links and inline formatting are shown in the app."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The task, with the comment at the end of its activity.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}/activity": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          },
+          "description": "Task id."
+        }
+      ],
+      "get": {
+        "tags": [
+          "Comments and history"
+        ],
+        "summary": "A task's history",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "comment",
+                "event"
+              ]
+            },
+            "description": "Only comments, or only recorded changes."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "activity": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ActivityEntry"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, subtask or endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/capture": {
+      "post": {
+        "tags": [
+          "Quick capture"
+        ],
+        "summary": "Add a task from one line",
+        "description": "The line is read exactly as the app's capture box (⌃⌥T) and add bar read it: dates (fri, tomorrow, oct 20), times (3pm sets a reminder), repeats (every week), !high / !med / !low, #project and @tag. Made for scripts and iOS Shortcuts: send the line as JSON, or as the whole body with Content-Type: text/plain.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "example": "Renew passport fri !high #personal"
+                  }
+                }
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "example": "Renew passport fri !high #personal"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new task, and how the line was read.",
+            "headers": {
+              "ETag": {
+                "description": "The task's rev, quoted. Send it back as If-Match when editing.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task"
+                  ],
+                  "properties": {
+                    "task": {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    "parsed": {
+                      "$ref": "#/components/schemas/Parsed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/capture/preview": {
+      "post": {
+        "tags": [
+          "Quick capture"
+        ],
+        "summary": "See how a line would be read",
+        "description": "Changes nothing.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The title and fields the line would produce.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Parsed"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was not valid. See error.code (invalid, invalid_json, unknown_field) and error.message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 256 KB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body must be application/json (quick capture also accepts text/plain).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many changes (120 a minute per client) or too many failed sign-ins. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/due": {
+      "get": {
+        "tags": [
+          "Overview"
+        ],
+        "summary": "What is due",
+        "description": "Open tasks grouped the way the Mac's menu bar item lists them, plus `later` for anything due more than a week out.",
+        "responses": {
+          "200": {
+            "description": "upcoming is the next 7 days; undated has no due date.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "overdue": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskSummary"
+                      }
+                    },
+                    "today": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskSummary"
+                      }
+                    },
+                    "upcoming": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskSummary"
+                      }
+                    },
+                    "undated": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskSummary"
+                      }
+                    },
+                    "later": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskSummary"
+                      }
+                    },
+                    "counts": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      }
+                    },
+                    "date": {
+                      "type": "string",
+                      "description": "Today on the Mac, YYYY-MM-DD."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/summary": {
+      "get": {
+        "tags": [
+          "Overview"
+        ],
+        "summary": "Counts and the daily summary",
+        "description": "The numbers on the dashboard's tiles, and what the 9 AM notification would say right now.",
+        "responses": {
+          "200": {
+            "description": "Counts and summary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "counts": {
+                      "$ref": "#/components/schemas/Counts"
+                    },
+                    "daily": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "title": {
+                              "type": "string",
+                              "example": "2 due today · 1 overdue"
+                            },
+                            "body": {
+                              "type": "string"
+                            },
+                            "tasks": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/TaskSummary"
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "null when nothing is due today or overdue."
+                    },
+                    "date": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The access token from Todos → Remote Access → Copy Access Token."
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "todos_session",
+        "description": "Set by POST /session. Changes made with it must come from the app's own origin."
+      }
+    },
+    "schemas": {
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "rev": {
+            "type": "integer",
+            "description": "Goes up by one with every change to the task."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "notes": {
+            "type": "string",
+            "description": "Markdown."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "todo",
+              "in_progress",
+              "blocked",
+              "done"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "due": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "YYYY-MM-DD. Also accepted on input: today, tomorrow, +3d, a weekday name, \"oct 20\". null clears it."
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assignee": {
+            "type": "string",
+            "enum": [
+              "me",
+              "claude"
+            ]
+          },
+          "repeat": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "daily",
+              "weekdays",
+              "weekly",
+              "biweekly",
+              "monthly",
+              "yearly",
+              null
+            ],
+            "description": "Completing a repeating task creates its next occurrence."
+          },
+          "remindAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the Mac shows a reminder. Also accepted on input: \"YYYY-MM-DD HH:MM\" (the Mac's local time), \"tomorrow 9am\", \"+2h\"."
+          },
+          "subtasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Subtask"
+            }
+          },
+          "remindedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the reminder was delivered."
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "\"me\", or the Claude session that created it."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "activity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActivityEntry"
+            }
+          }
+        }
+      },
+      "TaskSummary": {
+        "description": "A task as it appears in lists: everything except the activity log, plus a count of comments.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Task"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "comments": {
+                "type": "integer"
+              }
+            }
+          }
+        ]
+      },
+      "Subtask": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "done": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ActivityEntry": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "by": {
+            "type": "string",
+            "description": "\"me\", or a Claude session such as \"Claude Code · my-repo\"."
+          },
+          "via": {
+            "type": "string",
+            "description": "The device or client, when the change did not come from the Mac app itself."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "event",
+              "comment"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "Parsed": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "The line with dates and markers taken out. Empty if nothing else was left."
+          },
+          "fields": {
+            "type": "object",
+            "description": "Only what the line specified.",
+            "properties": {
+              "due": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "YYYY-MM-DD. Also accepted on input: today, tomorrow, +3d, a weekday name, \"oct 20\". null clears it."
+              },
+              "priority": {
+                "type": "string",
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ]
+              },
+              "project": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "repeat": {
+                "type": "string"
+              },
+              "remindAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "assignee": {
+                "type": "string",
+                "enum": [
+                  "me",
+                  "claude"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "Counts": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "integer"
+          },
+          "in_progress": {
+            "type": "integer"
+          },
+          "blocked": {
+            "type": "integer"
+          },
+          "overdue": {
+            "type": "integer"
+          },
+          "due_today": {
+            "type": "integer"
+          },
+          "claude": {
+            "type": "integer"
+          },
+          "done_7d": {
+            "type": "integer"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Stable, for programs: unauthorized, forbidden, forbidden_host, forbidden_origin, forbidden_user, not_found, method_not_allowed, invalid, invalid_json, unknown_field, unsupported_media_type, too_large, precondition_required, conflict, rate_limited, busy, internal."
+              },
+              "message": {
+                "type": "string",
+                "description": "For people."
+              }
+            }
+          }
+        }
+      },
+      "ConflictError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "const": "conflict"
+              },
+              "message": {
+                "type": "string"
+              },
+              "current": {
+                "$ref": "#/components/schemas/Task"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

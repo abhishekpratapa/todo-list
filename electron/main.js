@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startServer } from '../src/server.js';
 import {
-  DATA_FILE, PORT, ROOT, load, markReminded, pendingReminders, sortTodos, summarize, today, updateTodo, watchStore, ymd,
+  DATA_FILE, PORT, ROOT, dailySummary, dueGroups, load, markReminded, pendingReminders, summarize, today, updateTodo, watchStore,
 } from '../src/store.js';
 import { COOKIE } from '../src/auth.js';
 import { createRemote } from '../src/remote.js';
@@ -462,18 +462,9 @@ const clip = (text, max = 52) => (text.length > max ? `${text.slice(0, max - 1)}
 
 // What the menu bar menu lists: overdue, due today, the next 7 days, then undated tasks.
 function trayTaskItems(todos) {
-  const t0 = today();
-  const weekOut = new Date();
-  weekOut.setDate(weekOut.getDate() + 7);
-  const week = ymd(weekOut);
-  const open = sortTodos(todos.filter((t) => t.status !== 'done'));
-  const dayName = (due) => new Date(due + 'T00:00').toLocaleDateString(undefined, { weekday: 'short' });
-  const groups = [
-    ['Overdue', open.filter((t) => t.due && t.due < t0)],
-    ['Due today', open.filter((t) => t.due === t0)],
-    ['Next 7 days', open.filter((t) => t.due && t.due > t0 && t.due <= week).sort((a, b) => a.due.localeCompare(b.due))],
-    ['No due date', open.filter((t) => !t.due)],
-  ];
+  const due = dueGroups(todos);
+  const dayName = (day) => new Date(day + 'T00:00').toLocaleDateString(undefined, { weekday: 'short' });
+  const groups = [['Overdue', due.overdue], ['Due today', due.today], ['Next 7 days', due.upcoming], ['No due date', due.undated]];
 
   const items = [];
   let room = 12; // keep the menu a glanceable length
@@ -593,14 +584,8 @@ function checkReminders() {
   if (settings.dailySummary && settings.lastSummaryDate !== t0 && new Date().getHours() >= SUMMARY_HOUR) {
     settings.lastSummaryDate = t0;
     saveSettings();
-    const open = todos.filter((t) => t.status !== 'done' && t.due && t.due <= t0);
-    if (open.length) {
-      const overdue = open.filter((t) => t.due < t0).length;
-      const dueToday = open.length - overdue;
-      const title = [dueToday && `${dueToday} due today`, overdue && `${overdue} overdue`].filter(Boolean).join(' · ');
-      const more = open.length > 4 ? `, and ${open.length - 4} more` : '';
-      notify({ title, body: open.slice(0, 4).map((t) => t.title).join(', ') + more, onClick: showWindow });
-    }
+    const summary = dailySummary(todos);
+    if (summary) notify({ title: summary.title, body: summary.body, onClick: showWindow });
   }
 }
 

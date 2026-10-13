@@ -593,6 +593,37 @@ export function listTodos(filters = {}) {
   return { todos: list, total, summary: summarize(db.todos) };
 }
 
+// Open todos grouped by when they are due. The menu bar item shows the first four
+// groups; the API returns all five.
+export function dueGroups(todos) {
+  const t0 = today();
+  const weekOut = new Date();
+  weekOut.setDate(weekOut.getDate() + 7);
+  const week = ymd(weekOut);
+  const open = sortTodos(todos.filter((t) => t.status !== 'done'));
+  const byDue = (a, b) => a.due.localeCompare(b.due);
+  return {
+    overdue: open.filter((t) => t.due && t.due < t0),
+    today: open.filter((t) => t.due === t0),
+    upcoming: open.filter((t) => t.due && t.due > t0 && t.due <= week).sort(byDue), // the next 7 days
+    undated: open.filter((t) => !t.due),
+    later: open.filter((t) => t.due && t.due > week).sort(byDue),
+  };
+}
+
+// What the daily summary notification says: { title, body, tasks }, or null when
+// nothing is due today or overdue.
+export function dailySummary(todos) {
+  const t0 = today();
+  const tasks = todos.filter((t) => t.status !== 'done' && t.due && t.due <= t0);
+  if (!tasks.length) return null;
+  const overdue = tasks.filter((t) => t.due < t0).length;
+  const dueToday = tasks.length - overdue;
+  const title = [dueToday && `${dueToday} due today`, overdue && `${overdue} overdue`].filter(Boolean).join(' · ');
+  const more = tasks.length > 4 ? `, and ${tasks.length - 4} more` : '';
+  return { title, body: tasks.slice(0, 4).map((t) => t.title).join(', ') + more, tasks };
+}
+
 export function summarize(todos) {
   const t0 = today();
   const weekAgo = new Date(Date.now() - 7 * 864e5).toISOString();
