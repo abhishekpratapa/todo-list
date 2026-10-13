@@ -11,7 +11,7 @@ It never reads or writes the list's file. Everything goes through the running ap
 
 ### On the Mac
 
-The app carries the command inside it. Choose **Todos → Install Command Line Tool**, which links `~/.local/bin/todos` to the copy in the app, then open a new terminal window:
+The app carries the command inside it (in builds made with `npm run dist` from a checkout that has this folder). Choose **Todos → Install Command Line Tool**, which links `~/.local/bin/todos` to the copy in the app, then open a new terminal window:
 
 ```bash
 todos status
@@ -353,7 +353,26 @@ cd cli && go test ./...
 
 The tests never touch the installed app, its port (7420), its socket or its data.
 
-- **Unit tests** cover the connection layer over a socket and over HTTPS, profiles, token storage, starting the app and waiting for it, building the SSH command, output formats and exit codes.
-- **Integration tests** (`internal/integration`) run the built binary against two servers, each reached through a Unix socket and over HTTPS: a fake one (`internal/fakeserver`), and the **real Todos server** from this repository (`src/server.js`), started on port 7442 with its own data file, token and socket in a temporary folder. A small relay stands in for `tailscale serve`. The real-server tests are skipped where Node or the app's sources aren't available.
+- **Unit tests** cover the connection layer over a socket and over HTTPS, profiles, token storage, starting the app and waiting for it, building the SSH command, output formats, exit codes, and the board (golden files of what it draws at several sizes, and each change and conflict).
+- **Integration tests** (`internal/integration`) run the built binary, directly and inside a pseudo-terminal, against two servers, each reached through a Unix socket and over HTTPS: a fake one (`internal/fakeserver`), which can also misbehave on request, and the **real Todos server** from this repository (`src/server.js`), started on port 7442 with its own data file, token and socket in a temporary folder. A small relay stands in for `tailscale serve`. The real-server tests are skipped where Node or the app's sources aren't available.
+- **The real app.** One test starts Todos itself (Electron), in the background, through the command, with its own settings, data, socket and port. It is off unless asked for, because it puts an icon in the Dock for a few seconds:
 
-Dependencies are Charm's libraries (Bubble Tea, Bubbles, Lip Gloss, Glamour, Huh, Fang) and two others: [cobra](https://github.com/spf13/cobra), which Fang is built on and which provides the command tree and shell completions, and [go-keyring](https://github.com/zalando/go-keyring), for the macOS Keychain and the Linux Secret Service without cgo.
+```bash
+TODOS_TEST_ELECTRON="$PWD/../node_modules/electron/dist/Electron.app" go test ./internal/integration -run TestTheRealApp -v
+```
+
+```bash
+TODOS_TEST_APP="$PWD/../dist/mac-arm64/Todos.app" go test ./internal/integration -run TestTheRealApp -v
+```
+
+The first runs the app from this repository's sources. The second runs a packaged app (after `npm run dist`) and uses the `todos` inside it.
+
+`go test -short ./...` leaves out one test that waits for a connection to time out. `go test ./internal/... -update` rewrites the golden files.
+
+Dependencies are Charm's libraries (Bubble Tea, Bubbles, Lip Gloss, Glamour, Huh and Fang, all v2 at `charm.land/...`) and two others: [cobra](https://github.com/spf13/cobra), which Fang is built on and which provides the command tree and shell completions, and [go-keyring](https://github.com/zalando/go-keyring), for the macOS Keychain and the Linux Secret Service without cgo.
+
+## Not included
+
+- **A Homebrew tap.** It would take a public tap repository with a formula, and tagged releases with an archive and checksum per platform for the formula to point at (GoReleaser can produce both). On the Mac the command should still come from the app, so the two always match; a tap would mostly serve Linux machines.
+- **Serving the board over SSH (Wish).** With Tailscale SSH and a binary on each machine there is little it would add, and a listener on the Mac that runs the board against the local socket would put the Mac-only operations on the network.
+- **Windows.**
