@@ -6,7 +6,7 @@
 // this app's binary in node mode (ELECTRON_RUN_AS_NODE=1).
 
 import {
-  app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, powerMonitor, screen, shell,
+  app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, powerMonitor, screen, session, shell,
 } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,9 @@ import { startServer } from '../src/server.js';
 import {
   DATA_FILE, PORT, ROOT, load, markReminded, pendingReminders, sortTodos, summarize, today, updateTodo, watchStore, ymd,
 } from '../src/store.js';
+import { COOKIE } from '../src/auth.js';
+import { createRemote } from '../src/remote.js';
+import * as tailscale from '../src/tailscale.js';
 import { startInDesktop, startInTerminal, tildify } from './handoff.js';
 
 if (!app.requestSingleInstanceLock()) {
@@ -25,6 +28,8 @@ let captureWin = null;
 let tray = null;
 let dashboardUrl = null;
 let quitting = false;
+let remote = null; // remote-access state, shared with the server (created once the app is ready)
+let onDefaultPort = true; // false if another program had our port and we fell back to a random one
 
 // ---------- server ----------
 
@@ -32,10 +37,11 @@ let quitting = false;
 // something else holds it, fall back to any free port for the app window.
 async function startDashboard() {
   try {
-    return await startServer({ port: PORT, handoff });
+    return await startServer({ port: PORT, handoff, remote });
   } catch (e) {
     if (e.code !== 'EADDRINUSE') throw e;
-    return startServer({ port: 0, handoff });
+    onDefaultPort = false; // `tailscale serve` points at PORT, so other devices can't reach this one
+    return startServer({ port: 0, handoff, remote });
   }
 }
 
@@ -173,6 +179,8 @@ const settings = {
   projectFolders: {}, // project name -> folder Claude works in for that project
   lastFolder: null,
   handoffTarget: 'desktop', // where "Start with Claude" opens sessions: 'desktop' or 'terminal'
+  remoteAccess: false, // "Allow Access from My Other Devices"
+  remoteOwnerOnly: true, // relayed requests must come from this Mac's own Tailscale account
 };
 
 function loadSettings() {
@@ -189,6 +197,177 @@ function saveSettings() {
   } catch {
     // non-fatal
   }
+}
+
+// ---------- remote access ----------
+
+// What the Remote Access menu shows. Only refreshed from Tailscale while the setting is on.
+const NO_REMOTE_INFO = { tailscale: null, mapped: false, funnel: false, url: null, reachable: null };
+let remoteInfo = NO_REMOTE_INFO;
+
+const remoteAddress = (dnsName, httpsPort) => `https://${dnsName}${httpsPort === 443 ? '' : `:${httpsPort}`}`;
+const box = (options) => (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+const tell = (message, detail) => box({ type: 'info', buttons: ['OK'], message, detail });
+
+// The app's own windows get a session cookie signed with a key only this process
+// has, so they keep working, with no sign-in, once everything else needs one.
+function giveWindowsTheirCookie() {
+  return session.defaultSession.cookies
+    .set({ url: dashboardUrl, name: COOKIE, value: remote.appCookie(), httpOnly: true, sameSite: 'strict' })
+    .catch((e) => console.error(`Could not set the window session cookie: ${e.message}`));
+}
+
+// Reads Tailscale's state: which names and account the server should accept, and
+// whether the serve mapping is in place and actually answering.
+async function refreshRemote() {
+  let next = NO_REMOTE_INFO;
+  if (settings.remoteAccess) {
+    const ts = await tailscale.status();
+    remote.hosts.clear();
+    if (ts.dnsName) remote.hosts.add(ts.dnsName);
+    remote.ownerLogin = ts.ownerLogin || null;
+    const serve = ts.running ? await tailscale.serveStatus(PORT) : { mapped: false, funnel: false };
+    const url = serve.mapped && ts.dnsName ? remoteAddress(ts.dnsName, serve.httpsPort) : null;
+    // Ask our own public address for the health check, the way another device would.
+    const reachable = url && onDefaultPort
+      ? await fetch(`${url}/api/v1/health`, { signal: AbortSignal.timeout(6000) }).then((r) => r.ok, () => false)
+      : null;
+    next = { tailscale: ts, mapped: serve.mapped, funnel: serve.funnel, url, reachable };
+  }
+  const changed = JSON.stringify(next) !== JSON.stringify(remoteInfo);
+  remoteInfo = next;
+  if (changed) buildMenu();
+  if (changed && process.env.TODOS_DEBUG) console.log(`remote access: ${remoteStatusLine()}`);
+}
+
+function remoteStatusLine() {
+  if (!settings.remoteAccess) return 'Off';
+  if (!onDefaultPort) return `Port ${PORT} is in use, so other devices can’t connect`;
+  const { tailscale: ts, mapped, funnel, url, reachable } = remoteInfo;
+  if (!ts) return 'Checking Tailscale…';
+  if (!ts.installed) return 'Tailscale isn’t installed on this Mac';
+  if (!ts.running) return 'Tailscale isn’t running';
+  if (!mapped) return ts.httpsEnabled ? 'Not set up yet: choose Set Up Tailscale Serve' : 'HTTPS isn’t enabled for your tailnet yet';
+  if (funnel) return 'Warning: Tailscale Funnel is on for this address';
+  if (reachable === false) return 'Set up, but the address isn’t answering';
+  return `On at ${url.replace('https://', '')}`;
+}
+
+async function setRemoteAccess(on) {
+  settings.remoteAccess = on;
+  saveSettings();
+  if (on) await giveWindowsTheirCookie();
+  remote.setEnabled(on);
+  buildMenu();
+  await refreshRemote();
+  if (on && remoteInfo.tailscale?.running && !remoteInfo.mapped) setUpServe();
+}
+
+// The "Set Up Tailscale Serve" button: shows the one command, and runs it only on confirmation.
+async function setUpServe() {
+  const ts = await tailscale.status();
+  if (!ts.installed) return tell('Tailscale isn’t installed', 'Install Tailscale on this Mac and sign in, then choose Set Up Tailscale Serve again.');
+  if (!ts.running || !ts.dnsName) return tell('Tailscale isn’t running', 'Open Tailscale on this Mac and connect, then choose Set Up Tailscale Serve again.');
+  const plan = await tailscale.planServe(PORT);
+  if (plan.already) {
+    await refreshRemote();
+    return tell('Tailscale Serve is already set up', `Your other devices can open ${remoteAddress(ts.dnsName, plan.httpsPort)}`);
+  }
+  if (!plan.httpsPort) return tell('No free port', 'Tailscale Serve is already using ports 443, 8443 and 10000 for other things. Free one up and try again.');
+
+  const address = remoteAddress(ts.dnsName, plan.httpsPort);
+  const { response } = await box({
+    type: 'question',
+    buttons: ['Set Up', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    message: 'Set up Tailscale Serve?',
+    detail: `Todos will run this command once:\n\n${tailscale.serveCommand(PORT, plan.httpsPort)}\n\nIt makes Todos on this Mac available at ${address}, to devices on your tailnet only. Tailscale keeps this setting until you remove it.`,
+  });
+  if (response !== 0) return;
+
+  const result = await tailscale.serveOn(PORT);
+  await refreshRemote();
+  if (!result.ok) return tell('Tailscale Serve could not be set up', result.error || 'The tailscale command failed.');
+  const done = await box({
+    type: 'info',
+    buttons: ['Copy Address', 'OK'],
+    defaultId: 0,
+    message: remoteInfo.reachable === false ? 'Set up, but the address isn’t answering yet' : 'Tailscale Serve is set up',
+    detail: `On another device, open ${address} and enter your access token (Todos → Remote Access → Copy Access Token).`,
+  });
+  if (done.response === 0) clipboard.writeText(address);
+}
+
+async function removeServe() {
+  const { response } = await box({
+    type: 'question',
+    buttons: ['Remove', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: 'Remove the Tailscale Serve mapping?',
+    detail: 'Your other devices will no longer reach Todos on this Mac. Other Tailscale Serve mappings are left alone.',
+  });
+  if (response !== 0) return;
+  const result = await tailscale.serveOff(PORT);
+  await refreshRemote();
+  if (!result.ok) tell('The mapping could not be removed', result.error || 'The tailscale command failed.');
+}
+
+async function showToken() {
+  const { response } = await box({
+    type: 'info',
+    buttons: ['Copy', 'Done'],
+    defaultId: 1,
+    message: 'Access token',
+    detail: `${remote.token}\n\nEnter it once on each device, or send it as a bearer token from scripts. Anyone on your tailnet with this token can read and change your todos.`,
+  });
+  if (response === 0) clipboard.writeText(remote.token);
+}
+
+async function rotateToken() {
+  const { response } = await box({
+    type: 'warning',
+    buttons: ['Rotate', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: 'Create a new access token?',
+    detail: 'Every other device and script is signed out and needs the new token. This Mac’s own Todos window is not affected.',
+  });
+  if (response !== 0) return;
+  remote.rotate();
+  tell('New access token created', 'Use Todos → Remote Access → Copy Access Token to get it.');
+}
+
+function remoteMenu() {
+  const on = settings.remoteAccess;
+  const { tailscale: ts, mapped, url } = remoteInfo;
+  return {
+    label: 'Remote Access',
+    submenu: [
+      { label: 'Allow Access from My Other Devices', type: 'checkbox', checked: on, click: (item) => setRemoteAccess(item.checked) },
+      { label: remoteStatusLine(), enabled: false },
+      { label: 'Copy Address', enabled: !!url, click: () => clipboard.writeText(url) },
+      mapped
+        ? { label: 'Remove Tailscale Serve Mapping…', click: removeServe }
+        : { label: 'Set Up Tailscale Serve…', enabled: on, click: setUpServe },
+      { type: 'separator' },
+      { label: 'Copy Access Token', enabled: on, click: () => clipboard.writeText(remote.token) },
+      { label: 'Show Access Token…', enabled: on, click: showToken },
+      { label: 'Rotate Access Token…', enabled: on, click: rotateToken },
+      { type: 'separator' },
+      {
+        label: `Only My Tailscale Account${ts?.ownerLogin ? ` (${ts.ownerLogin})` : ''}`,
+        type: 'checkbox',
+        checked: settings.remoteOwnerOnly,
+        click: (item) => {
+          settings.remoteOwnerOnly = item.checked;
+          remote.requireOwner = item.checked;
+          saveSettings();
+        },
+      },
+    ],
+  };
 }
 
 // ---------- quick capture ----------
@@ -533,6 +712,7 @@ function buildMenu() {
             { label: 'Off', type: 'radio', checked: !settings.captureShortcut, click: () => setCaptureShortcut(null) },
           ],
         },
+        remoteMenu(),
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -603,6 +783,12 @@ app.on('window-all-closed', () => {
 
 app.whenReady().then(async () => {
   loadSettings();
+  remote = createRemote({
+    tokenFile: path.join(app.getPath('userData'), 'remote-access-token'),
+    enabled: settings.remoteAccess,
+    requireOwner: settings.remoteOwnerOnly,
+  });
+  remote.deviceName = tailscale.deviceName;
   try {
     ({ url: dashboardUrl } = await startDashboard());
   } catch (e) {
@@ -610,6 +796,9 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+  await giveWindowsTheirCookie(); // before any window loads; harmless while remote access is off
+  if (settings.remoteAccess) refreshRemote(); // not awaited: Tailscale may be slow, and the windows don't depend on it
+  setInterval(() => settings.remoteAccess && refreshRemote(), 60_000);
   registerShortcut();
   buildMenu();
   createWindow();

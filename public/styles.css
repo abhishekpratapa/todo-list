@@ -412,6 +412,35 @@ main { max-width: 1440px; margin: 0 auto; padding: 20px 24px 48px; }
 .toast[hidden] { display: none; }
 .toast.clickable { cursor: pointer; }
 
+/* ---------- other devices ---------- */
+
+.page-foot { margin-top: 28px; text-align: center; }
+.page-foot[hidden] { display: none; }
+
+/* Room for the notch and home indicator when opened from a phone's home screen. */
+.topbar { padding-top: max(12px, env(safe-area-inset-top)); }
+main { padding-bottom: calc(48px + env(safe-area-inset-bottom)); }
+.drawer-head { padding-top: max(12px, env(safe-area-inset-top)); }
+.drawer-body { padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
+
+/* Touch screens: text fields at 16px (iOS zooms the page for anything smaller),
+   larger tap targets, and controls that otherwise only appear on hover. */
+@media (hover: none) and (pointer: coarse) {
+  input, select, textarea, .qa-title { font-size: 16px; }
+  .btn, .qa-extras input, .qa-extras select, .fields input, .fields select, .comment-form input, .handoff select { height: 40px; }
+  .check, .subtasks .check { width: 24px; height: 24px; }
+  .check svg { width: 15px; height: 15px; }
+  .card { grid-template-columns: 26px 1fr; padding: 12px; }
+  .pill { height: 34px; padding: 0 14px; font-size: 14px; }
+  .seg button { height: 38px; }
+  .seg.small button { height: 34px; }
+  .icon-btn { width: 40px; height: 40px; }
+  .link-btn { padding: 8px; }
+  .search { padding: 8px 10px; }
+  .sub-title, .sub-add input { height: 40px; }
+  .sub-remove { width: 36px; height: 36px; opacity: 1; }
+}
+
 /* ---------- desktop app (Electron) ---------- */
 
 /* The window uses a hidden-inset title bar: the top bar doubles as the drag
@@ -430,8 +459,10 @@ main { max-width: 1440px; margin: 0 auto; padding: 20px 24px 48px; }
   .search { width: auto; flex: 1; max-width: 220px; }
   .search kbd { display: none; }
   main { padding: 14px 16px 40px; }
-  .stats { grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .stat { padding: 10px 12px; }
+  /* One swipeable row of tiles, so tasks start higher up the screen. */
+  .stats { display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x proximity; scroll-padding-inline: 16px; scrollbar-width: none; margin-inline: -16px; padding-inline: 16px; }
+  .stats::-webkit-scrollbar { display: none; }
+  .stat { flex: 0 0 auto; min-width: 112px; padding: 10px 12px; scroll-snap-align: start; }
   .stat .num { font-size: 21px; }
   .quickadd { flex-direction: column; align-items: stretch; }
   .qa-extras { flex-wrap: wrap; }
@@ -443,6 +474,4 @@ main { max-width: 1440px; margin: 0 auto; padding: 20px 24px 48px; }
 
 @media (max-width: 420px) {
   .live { display: none; }
-  .stats { grid-template-columns: repeat(2, 1fr); }
-  .stat:last-child:nth-child(odd) { grid-column: span 2; }
 }

@@ -96,6 +96,11 @@ function ago(iso) {
 }
 
 const actorName = (by) => (by === 'me' ? 'You' : by);
+// "You · iPhone" when a change came from another device or an API client.
+const who = (a) => actorName(a.by) + (a.via ? ` · ${a.via}` : '');
+// Dragging cards is for a mouse or trackpad. On touch it fights with scrolling,
+// and the status buttons in the detail panel do the same job.
+const CAN_DRAG = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 const avatar = (by) => (by === 'me' ? `<span class="avatar">${ICONS.user}</span>` : `<span class="avatar claude">${ICONS.spark}</span>`);
 
 let toastTimer;
@@ -121,7 +126,8 @@ async function api(method, url, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (res.status === 401) location.replace('/login'); // signed out, or the access token was rotated
+  if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status });
   return data;
 }
 
@@ -137,6 +143,7 @@ async function refresh() {
     }
     state.todos = data.todos;
     state.handoff = data.handoff || null;
+    $('#page-foot').hidden = data.session !== 'remote'; // only a signed-in browser has anything to sign out of
     state.summary = data.summary;
     state.version = data.version;
     render();
@@ -164,17 +171,41 @@ function applyOptimistic(t, fields) {
   for (const title of fields.add_subtasks || []) t.subtasks.push({ id: nextId++, title, done: false });
 }
 
-async function patch(id, fields) {
+// Changes are sent one at a time, so each sees the result of the one before it.
+let sending = Promise.resolve();
+
+// `guard` is for edits that replace a value (title, notes, due date...): the change
+// is refused if the task was changed somewhere else since this page last loaded it,
+// instead of silently overwriting that. Additive changes (comments, checking a
+// subtask, moving a card) don't need it.
+function patch(id, fields, { guard = false } = {}) {
   const t = byId(id);
   if (t) applyOptimistic(t, fields);
   render();
-  try {
-    const { next } = await api('PATCH', `/api/todos/${id}`, fields);
-    if (next) toast(`Repeats ${REPEAT_LABELS[next.repeat].toLowerCase()}. The next one is due ${fmtDay(next.due)}.`);
-  } catch (e) {
-    toast(e.message);
-  }
-  refresh();
+  sending = sending.then(async () => {
+    const current = byId(id);
+    let draft = null;
+    try {
+      const { todo, next } = await api('PATCH', `/api/todos/${id}`, guard && current ? { ...fields, rev: current.rev } : fields);
+      if (current && todo) current.rev = todo.rev;
+      if (next) toast(`Repeats ${REPEAT_LABELS[next.repeat].toLowerCase()}. The next one is due ${fmtDay(next.due)}.`);
+    } catch (e) {
+      if (e.status === 409) {
+        if ('notes' in fields) draft = fields.notes;
+        toast(draft === null
+          ? 'This task was changed somewhere else. Showing the latest version.'
+          : 'These notes were changed somewhere else. Your text is still in the editor: check it and save again.', { ms: 8000 });
+      } else {
+        toast(e.message);
+      }
+    }
+    await refresh();
+    if (draft !== null && state.openId === id) {
+      editNotes();
+      $('#d-notes').value = draft;
+    }
+  }).catch(() => {}); // one failed change must not block the ones after it
+  return sending;
 }
 
 function connect() {
@@ -190,10 +221,16 @@ function connect() {
     onVersion(e);
   });
   es.addEventListener('change', onVersion);
+  let probed = 0;
   es.onerror = () => {
     live.className = 'live off';
     live.textContent = 'Offline';
     live.title = 'Lost connection to the dashboard server. Retrying…';
+    // The stream also drops when this device is signed out; api() sends us to sign in then.
+    if (Date.now() - probed > 10_000) {
+      probed = Date.now();
+      api('GET', '/api/todos').catch(() => {});
+    }
   };
 }
 
@@ -304,12 +341,12 @@ function cardHtml(t) {
 
   return `
     <article class="card prio-${t.priority}${t.status === 'done' ? ' done' : ''}${state.openId === t.id ? ' selected' : ''}${flash ? ' flash' : ''}"
-             draggable="true" data-id="${t.id}" tabindex="0" aria-label="${esc(t.title)}">
+             draggable="${CAN_DRAG}" data-id="${t.id}" tabindex="0" aria-label="${esc(t.title)}">
       <button class="check" data-check aria-label="${t.status === 'done' ? 'Mark not done' : 'Mark done'}">${ICONS.check}</button>
       <div class="card-title">${esc(t.title)}</div>
       <div class="card-meta">${chips}</div>
       <div class="card-foot">
-        ${last ? `${avatar(last.by)}<span class="who" title="${esc(actorName(last.by))} ${esc(last.text)}">${esc(actorName(last.by))} · ${ago(last.at)}</span>` : ''}
+        ${last ? `${avatar(last.by)}<span class="who" title="${esc(who(last))} ${esc(last.text)}">${esc(who(last))} · ${ago(last.at)}</span>` : ''}
         ${comments ? `<span class="comments" title="${comments} comment${comments === 1 ? '' : 's'}">${ICONS.chat}${comments}</span>` : ''}
       </div>
     </article>`;
@@ -390,7 +427,7 @@ function renderDrawer() {
   $('#d-activity').innerHTML = [...t.activity].reverse().map((a) => `
     <li>
       ${avatar(a.by)}
-      <div class="meta"><b>${esc(actorName(a.by))}</b> ${a.kind === 'comment' ? 'commented' : esc(a.text)}<time datetime="${esc(a.at)}" title="${esc(new Date(a.at).toLocaleString())}">${ago(a.at)}</time></div>
+      <div class="meta"><b>${esc(who(a))}</b> ${a.kind === 'comment' ? 'commented' : esc(a.text)}<time datetime="${esc(a.at)}" title="${esc(new Date(a.at).toLocaleString())}">${ago(a.at)}</time></div>
       ${a.kind === 'comment' ? `<div class="bubble md">${inlineMarkdown(a.text)}</div>` : ''}
     </li>`).join('');
 }
@@ -480,7 +517,7 @@ function saveField(key, raw) {
     if (!value) return render();
   }
   if (JSON.stringify(t[key]) === JSON.stringify(value)) return;
-  patch(t.id, { [key]: value });
+  patch(t.id, { [key]: value }, { guard: true });
 }
 
 // ---------- events ----------
@@ -591,7 +628,7 @@ for (const segId of ['d-status', 'd-priority', 'd-assignee']) {
     const b = e.target.closest('button');
     if (!b || state.openId === null) return;
     const key = segId.slice(2);
-    if (byId(state.openId)[key] !== b.dataset.value) patch(state.openId, { [key]: b.dataset.value });
+    if (byId(state.openId)[key] !== b.dataset.value) patch(state.openId, { [key]: b.dataset.value }, { guard: key !== 'status' });
   });
 }
 
@@ -634,18 +671,18 @@ $('#d-handoff-start').addEventListener('click', () => startWithClaude(false));
 $('#d-handoff-folder').addEventListener('click', () => startWithClaude(true));
 
 $('#d-repeat').addEventListener('change', (e) => {
-  if (state.openId !== null) patch(state.openId, { repeat: e.target.value || null });
+  if (state.openId !== null) patch(state.openId, { repeat: e.target.value || null }, { guard: true });
 });
 
 // Saved on blur, not change: a datetime field fires change for every segment typed.
 const dRemind = $('#d-remind');
 dRemind.addEventListener('blur', () => {
   const t = byId(state.openId);
-  if (t && dRemind.value !== (t.remindAt ? toLocalInput(t.remindAt) : '')) patch(t.id, { remindAt: dRemind.value || null });
+  if (t && dRemind.value !== (t.remindAt ? toLocalInput(t.remindAt) : '')) patch(t.id, { remindAt: dRemind.value || null }, { guard: true });
 });
 $('#d-remind-clear').addEventListener('click', () => {
   dRemind.value = '';
-  if (byId(state.openId)?.remindAt) patch(state.openId, { remindAt: null });
+  if (byId(state.openId)?.remindAt) patch(state.openId, { remindAt: null }, { guard: true });
 });
 
 const subList = $('#d-subtasks');
@@ -735,6 +772,11 @@ document.addEventListener('keydown', (e) => {
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
   if (e.key === 'n' || e.key === 'N') { e.preventDefault(); $('#qa-title').focus(); }
+});
+
+$('#signout').addEventListener('click', async () => {
+  await fetch('/api/v1/session', { method: 'DELETE' }).catch(() => {});
+  location.replace('/login');
 });
 
 // Hooks for the desktop app shell: notification clicks open the task they are about,

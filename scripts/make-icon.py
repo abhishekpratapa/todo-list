@@ -5,6 +5,7 @@ functions for smooth anti-aliasing.
   build/icon.png                       1024x1024 app icon: indigo rounded square, white check
   electron/assets/trayTemplate.png     18x18 menu bar icon (black + alpha "template" image,
   electron/assets/trayTemplate@2x.png  36x36  which macOS tints for light and dark menu bars)
+  public/icons/icon-{180,192,512}.png  full-bleed icons for phone home screens
 """
 
 import math
@@ -109,6 +110,25 @@ def render_tray(size):
     return bytes(rows)
 
 
+def render_touch(size):
+    """The app icon's artwork filling the whole square, with no rounded corners or
+    shadow: phones apply their own mask to home-screen icons."""
+    k = size / float(BODY)
+    inset = (SIZE - BODY) / 2.0
+    (ax, ay), (bx, by), (cx, cy) = [((x - inset) * k, (y - inset) * k) for x, y in CHECK]
+    stroke = STROKE * k
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)
+        py = y + 0.5
+        fill = [TOP[i] + (BOTTOM[i] - TOP[i]) * (py / size) for i in range(3)]
+        for x in range(size):
+            px = x + 0.5
+            c = coverage(min(segment_dist(px, py, ax, ay, bx, by), segment_dist(px, py, bx, by, cx, cy)) - stroke)
+            rows += bytes([round(fill[i] + (255 - fill[i]) * c) for i in range(3)] + [255])
+    return bytes(rows)
+
+
 def write_png(path, raw, size=SIZE):
     def chunk(tag, data):
         body = tag + data
@@ -127,6 +147,11 @@ if __name__ == '__main__':
     targets = [(os.path.join(root, 'electron', 'assets', 'trayTemplate.png'), 18), (os.path.join(root, 'electron', 'assets', 'trayTemplate@2x.png'), 36)]
     for path, size in targets:
         write_png(path, render_tray(size), size)
+        print('wrote', path)
+    os.makedirs(os.path.join(root, 'public', 'icons'), exist_ok=True)
+    for size in (180, 192, 512):
+        path = os.path.join(root, 'public', 'icons', 'icon-%d.png' % size)
+        write_png(path, render_touch(size), size)
         print('wrote', path)
     if '--tray-only' not in sys.argv:
         out = os.path.join(root, 'build', 'icon.png')

@@ -35,6 +35,15 @@ export const REPEATS = ['daily', 'weekdays', 'weekly', 'biweekly', 'monthly', 'y
 export const REPEAT_LABELS = { daily: 'daily', weekdays: 'every weekday', weekly: 'weekly', biweekly: 'every 2 weeks', monthly: 'monthly', yearly: 'yearly' };
 
 export class TodoError extends Error {}
+export class NotFoundError extends TodoError {}
+
+// A write named the revision it was based on, and the todo has changed since.
+export class ConflictError extends TodoError {
+  constructor(todo) {
+    super(`Todo #${todo.id} has changed since you loaded it (it is now at revision ${todo.rev})`);
+    this.current = todo;
+  }
+}
 
 const emptyDb = () => ({ version: 0, nextId: 1, updatedAt: null, todos: [] });
 const now = () => new Date().toISOString();
@@ -59,6 +68,7 @@ export function load() {
     t.repeat ??= null;
     t.remindAt ??= null;
     t.remindedAt ??= null;
+    t.rev ??= 1;
   }
   return db;
 }
@@ -339,8 +349,20 @@ function cleanFields(input) {
 function findIn(db, id) {
   const n = Number(String(id).replace(/^#/, ''));
   const todo = db.todos.find((t) => t.id === n);
-  if (!todo) throw new TodoError(`No todo with id #${id}`);
+  if (!todo) throw new NotFoundError(`No todo with id #${id}`);
   return todo;
+}
+
+// Every todo carries `rev`, bumped on each change to it. A writer that passes the
+// revision it last saw (`ifRev`) is refused if someone else got there first.
+function checkRev(todo, ifRev) {
+  if (ifRev !== undefined && ifRev !== null && Number(ifRev) !== todo.rev) throw new ConflictError(todo);
+}
+
+// An activity entry. `via` names the device or client when the change did not come
+// from the Mac app itself, e.g. { by: 'me', via: 'iPhone' }.
+function entry(at, by, kind, text, via) {
+  return via ? { at, by, kind, text, via } : { at, by, kind, text };
 }
 
 // ---------- operations ----------
@@ -349,7 +371,7 @@ export function getTodo(id) {
   return findIn(load(), id);
 }
 
-export function createTodo(input, by) {
+export function createTodo(input, by, { via } = {}) {
   if (!('title' in input)) throw new TodoError('Title is required');
   const fields = cleanFields(input);
   const subtasks = cleanSubtaskTitles(input.subtasks ?? []);
@@ -369,16 +391,17 @@ export function createTodo(input, by) {
       repeat: null,
       remindAt: null,
       remindedAt: null,
+      rev: 1,
       createdBy: by,
       createdAt: ts,
       updatedAt: ts,
       completedAt: null,
-      activity: [{ at: ts, by, kind: 'event', text: 'created this task' }],
+      activity: [entry(ts, by, 'event', 'created this task', via)],
       ...fields,
     };
     if (todo.status === 'done') todo.completedAt = ts;
     const comment = cleanText(input.comment);
-    if (comment) todo.activity.push({ at: ts, by, kind: 'comment', text: comment });
+    if (comment) todo.activity.push(entry(ts, by, 'comment', comment, via));
     db.todos.push(todo);
     return todo;
   });
@@ -439,7 +462,7 @@ function applySubtaskOps(todo, patch, changes) {
 // Creates the next occurrence of a repeating todo that was just completed. The
 // completed one stops repeating (it stays in Done as history); the copy carries
 // the repeat forward with a fresh checklist and a shifted reminder.
-function spawnNext(db, todo, ts, by) {
+function spawnNext(db, todo, ts, by, via) {
   const due = nextDue(todo.due, todo.repeat);
   let remindAt = null;
   if (todo.remindAt) {
@@ -456,10 +479,11 @@ function spawnNext(db, todo, ts, by) {
     subtasks: todo.subtasks.map((s) => ({ ...s, done: false })),
     remindAt,
     remindedAt: null,
+    rev: 1,
     createdAt: ts,
     updatedAt: ts,
     completedAt: null,
-    activity: [{ at: ts, by, kind: 'event', text: `created this task (repeats ${REPEAT_LABELS[todo.repeat]}, follows #${todo.id})` }],
+    activity: [entry(ts, by, 'event', `created this task (repeats ${REPEAT_LABELS[todo.repeat]}, follows #${todo.id})`, via)],
   };
   db.todos.push(next);
   todo.repeat = null;
@@ -467,11 +491,14 @@ function spawnNext(db, todo, ts, by) {
 }
 
 // Returns { todo, next }: `next` is the new occurrence when completing a repeating todo, else null.
-export function updateTodo(id, patch, by) {
+// Options: `ifRev` refuses the write (ConflictError) unless the todo is still at that
+// revision; `via` labels the activity entries with a device or client name.
+export function updateTodo(id, patch, by, { ifRev, via } = {}) {
   const fields = cleanFields(patch);
   const comment = cleanText(patch.comment);
   return mutate((db) => {
     const todo = findIn(db, id);
+    checkRev(todo, ifRev);
     const ts = now();
     const changes = [];
     const becameDone = fields.status === 'done' && todo.status !== 'done';
@@ -485,12 +512,15 @@ export function updateTodo(id, patch, by) {
     applySubtaskOps(todo, patch, changes);
     let next = null;
     if (becameDone && todo.repeat) {
-      next = spawnNext(db, todo, ts, by);
+      next = spawnNext(db, todo, ts, by, via);
       changes.push(`next occurrence is #${next.id}, due ${next.due}`);
     }
-    if (changes.length) todo.activity.push({ at: ts, by, kind: 'event', text: changes.join(' · ') });
-    if (comment) todo.activity.push({ at: ts, by, kind: 'comment', text: comment });
-    if (changes.length || comment) todo.updatedAt = ts;
+    if (changes.length) todo.activity.push(entry(ts, by, 'event', changes.join(' · '), via));
+    if (comment) todo.activity.push(entry(ts, by, 'comment', comment, via));
+    if (changes.length || comment) {
+      todo.updatedAt = ts;
+      todo.rev += 1;
+    }
     return { todo, next };
   });
 }
@@ -510,9 +540,10 @@ export function markReminded(ids) {
   });
 }
 
-export function deleteTodo(id) {
+export function deleteTodo(id, { ifRev } = {}) {
   return mutate((db) => {
     const todo = findIn(db, id);
+    checkRev(todo, ifRev);
     db.todos = db.todos.filter((t) => t !== todo);
     return todo;
   });

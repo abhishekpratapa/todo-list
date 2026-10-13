@@ -12,6 +12,7 @@
   "scripts": {
     "start": "node src/server.js",
     "mcp": "node src/mcp.js",
+    "test": "node --test \"test/*.test.js\"",
     "app": "electron .",
     "icon": "python3 scripts/make-icon.py",
     "dist": "electron-builder --mac"

@@ -1,0 +1,23 @@
+/* Sign-in page. Colors and buttons come from styles.css. */
+
+body.login { min-height: 100dvh; display: grid; place-items: center; padding: 24px 20px calc(24px + env(safe-area-inset-bottom)); }
+.login main { width: min(380px, 100%); max-width: none; margin: 0; padding: 0; text-align: center; }
+.login .logo { width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 14px; }
+.login .logo svg { width: 34px; height: 34px; }
+.login h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.02em; }
+.login .lead { margin: 0 0 22px; color: var(--muted); font-size: 15px; }
+
+.login form { display: flex; flex-direction: column; gap: 10px; text-align: left; }
+.login label { font-size: 13px; color: var(--muted); }
+.login input[type="password"] {
+  height: 46px; padding: 0 12px; border-radius: 10px;
+  border: 1px solid var(--border-strong); background: var(--surface); outline: 0;
+  font: 16px ui-monospace, SFMono-Regular, monospace; /* 16px keeps iOS from zooming in */
+}
+.login input[type="password"]:focus { border-color: var(--accent); }
+.login .btn { height: 46px; font-size: 16px; border-radius: 10px; }
+.login .btn:disabled { opacity: .6; }
+.login .error { margin: 2px 0 0; color: var(--danger); font-size: 14px; }
+.login .error[hidden] { display: none; }
+.login .hint { margin: 22px 0 0; color: var(--faint); font-size: 13px; line-height: 1.5; }
+.login .hint b { color: var(--muted); font-weight: 600; }
