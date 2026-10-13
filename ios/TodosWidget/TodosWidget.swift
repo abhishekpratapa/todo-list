@@ -1,6 +1,8 @@
 // The home screen and lock screen widget: what is due today and what is overdue.
 // The large size also shows what is coming up in the next week and, where there
-// is still room, the rest of the open tasks.
+// is still room, the rest of the open tasks. It uses the room it has: with a
+// short list each title is shown in full, with its small print; only a long
+// list goes down to a line a task.
 //
 // It reads the list the app keeps in the shared container, with this iPhone's
 // waiting changes on top, so it shows what the app shows. It never contacts the
@@ -21,8 +23,8 @@ struct DueEntry: TimelineEntry, Sendable {
         due: DueOverview(
             overdue: [TodoTask(id: 1, title: "Pay electricity bill", due: Day(Date().addingTimeInterval(-2 * 86_400)))],
             today: [TodoTask(id: 2, title: "Renew passport", priority: .high, due: .today()), TodoTask(id: 3, title: "Water the plants", due: .today())],
-            upcoming: [TodoTask(id: 4, title: "Book flights", due: Day(Date().addingTimeInterval(2 * 86_400))), TodoTask(id: 5, title: "Call the bank", due: Day(Date().addingTimeInterval(4 * 86_400)))],
-            later: [TodoTask(id: 6, title: "Plan the garden"), TodoTask(id: 7, title: "Sort old photos")]
+            upcoming: [TodoTask(id: 4, title: "Book flights", due: Day(Date().addingTimeInterval(2 * 86_400))), TodoTask(id: 5, title: "Call the bank about the standing order", status: .inProgress, due: Day(Date().addingTimeInterval(4 * 86_400)), project: "money")],
+            later: [TodoTask(id: 6, title: "Plan the garden", project: "home"), TodoTask(id: 7, title: "Sort old photos")]
         )
     )
 
@@ -68,9 +70,12 @@ struct DueWidgetView: View {
                 case .accessoryRectangular:
                     lockScreen
                 case .systemLarge:
-                    // As many lines as fit at the current text size.
+                    // The first of these that fits. (One list, numbered, so that each
+                    // has an identity of its own: ViewThatFits stops on two children alike.)
                     ViewThatFits(in: .vertical) {
-                        ForEach(Array((2...16).reversed()), id: \.self) { large(rows: $0) }
+                        ForEach(Array(fits.enumerated()), id: \.offset) { _, fit in
+                            large(rows: fit.rows, fit.density, wrapping: fit.wrapping)
+                        }
                     }
                 case .systemSmall:
                     compact(showing: 3)
@@ -105,7 +110,7 @@ struct DueWidgetView: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(due.dueNow.prefix(limit)) { task in
-                row(task, due.overdue.contains(task) ? .overdue : .today, detail: false)
+                row(task, due.overdue.contains(task) ? .overdue : .today)
             }
             if due.dueNow.count > limit {
                 more(due.dueNow.count - limit)
@@ -117,10 +122,48 @@ struct DueWidgetView: View {
 
     // MARK: Large
 
-    /// Overdue, today, the week ahead and the rest, each under its heading, in `rows` lines.
-    private func large(rows: Int) -> some View {
+    private static let mostRows = 16
+
+    /// One way of laying the large size out.
+    private struct Fit {
+        var density: Density
+        var rows: Int
+        var wrapping = 0
+    }
+
+    /// The layouts to try, best first: the roomiest form that shows every task;
+    /// failing that, a line a task with as many of the first ones on two lines as
+    /// there is room for; and for a long list, as many tasks as fit at the current
+    /// text size.
+    private var fits: [Fit] {
+        let most = Self.mostRows
+        return [Density.roomy, .full, .wrapped].map { Fit(density: $0, rows: most) }
+            + stride(from: min(due.count, most) - 1, to: 0, by: -1).map { Fit(density: .compact, rows: most, wrapping: $0) }
+            + stride(from: most, to: 1, by: -1).map { Fit(density: .compact, rows: $0) }
+    }
+
+    /// How much room a task is given in the large size.
+    private struct Density {
+        var title: Font
+        /// How many lines a title may run to.
+        var lines: Int
+        /// Whether the small print goes under the title: status, project, checklist.
+        var detail: Bool
+        var spacing: CGFloat
+
+        static let roomy = Density(title: .body, lines: 3, detail: true, spacing: 12)
+        static let full = Density(title: .subheadline, lines: 3, detail: true, spacing: 9)
+        static let wrapped = Density(title: .subheadline, lines: 2, detail: false, spacing: 7)
+        static let compact = Density(title: .subheadline, lines: 1, detail: false, spacing: 6)
+    }
+
+    /// Overdue, today, the week ahead and the rest, each under its heading: `rows` of
+    /// them at most, counting the headings. The first `wrapping` tasks may run to a
+    /// line more than the density gives: what is most pressing gets the spare room.
+    private func large(rows: Int, _ density: Density, wrapping: Int = 0) -> some View {
         let plan = due.sections(fitting: rows)
-        return VStack(alignment: .leading, spacing: 6) {
+        let favoured = Set(plan.sections.flatMap(\.tasks).prefix(wrapping).map(\.id))
+        return VStack(alignment: .leading, spacing: density.spacing) {
             HStack(alignment: .firstTextBaseline) {
                 count
                 Text(entry.date, format: .dateTime.weekday(.wide).month().day())
@@ -140,7 +183,7 @@ struct DueWidgetView: View {
                     .padding(.top, 2)
                     .accessibilityAddTraits(.isHeader)
                 ForEach(section.tasks) { task in
-                    row(task, section.kind, detail: true)
+                    largeRow(task, section.kind, density, lines: density.lines + (favoured.contains(task.id) ? 1 : 0))
                 }
             }
             if plan.hidden > 0 {
@@ -149,6 +192,47 @@ struct DueWidgetView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    /// One task in the large size: its title on as many lines as the density allows,
+    /// its small print under it, and when it is due at the end of the first line.
+    private func largeRow(_ task: TodoTask, _ kind: DueOverview.Kind, _ density: Density, lines: Int) -> some View {
+        let when = task.due.map { $0.label(relativeTo: Day(entry.date)) } ?? ""
+        let detail = density.detail ? task.widgetDetail : ""
+        return Link(destination: AppLinks.task(task.id)) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Image(systemName: kind == .overdue ? "exclamationmark.circle.fill" : "circle")
+                    .font(.caption2)
+                    .foregroundStyle(kind == .overdue ? Color.red : Color.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(task.title)
+                        .font(density.title)
+                        .lineLimit(lines)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !detail.isEmpty {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                if task.priority == .high {
+                    Image(systemName: "exclamationmark")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.red)
+                }
+                Spacer(minLength: 4)
+                if kind != .today, !when.isEmpty {
+                    Text(when)
+                        .font(.caption)
+                        .foregroundStyle(kind == .overdue ? Color.red : Color.secondary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                }
+            }
+        }
+        .accessibilityLabel([task.title, detail, spoken(kind, when)].filter { !$0.isEmpty }.joined(separator: ", "))
     }
 
     // MARK: Pieces
@@ -168,36 +252,19 @@ struct DueWidgetView: View {
         .accessibilityLabel(due.summary)
     }
 
-    /// One task. Tapping it opens it in the app. `detail` adds its date and priority, where there is room.
-    private func row(_ task: TodoTask, _ kind: DueOverview.Kind, detail: Bool) -> some View {
-        let today = Day(entry.date)
-        let when = task.due.map { $0.label(relativeTo: today) } ?? ""
-        return Link(destination: AppLinks.task(task.id)) {
+    /// One task in the small and medium sizes: its title, on one line. Tapping it opens it in the app.
+    private func row(_ task: TodoTask, _ kind: DueOverview.Kind) -> some View {
+        Link(destination: AppLinks.task(task.id)) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: kind == .overdue ? "exclamationmark.circle.fill" : "circle")
                     .font(.caption2)
                     .foregroundStyle(kind == .overdue ? Color.red : Color.secondary)
                 Text(task.title)
-                    .font(detail ? .subheadline : .footnote)
+                    .font(.footnote)
                     .lineLimit(1)
-                if detail {
-                    if task.priority == .high {
-                        Image(systemName: "exclamationmark")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.red)
-                    }
-                    Spacer(minLength: 4)
-                    if kind != .today, !when.isEmpty {
-                        Text(when)
-                            .font(.caption)
-                            .foregroundStyle(kind == .overdue ? Color.red : Color.secondary)
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                    }
-                }
             }
         }
-        .accessibilityLabel([task.title, spoken(kind, when)].filter { !$0.isEmpty }.joined(separator: ", "))
+        .accessibilityLabel([task.title, spoken(kind, task.due.map { $0.label(relativeTo: Day(entry.date)) } ?? "")].filter { !$0.isEmpty }.joined(separator: ", "))
     }
 
     private func spoken(_ kind: DueOverview.Kind, _ when: String) -> String {

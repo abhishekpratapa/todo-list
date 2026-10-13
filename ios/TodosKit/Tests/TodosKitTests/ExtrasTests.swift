@@ -225,6 +225,18 @@ struct DueOverviewTests {
         #expect(all.map(\.id).sorted() == [1, 2, 3, 4, 5, 6, 7, 8, 11, 12], "each open task appears once")
     }
 
+    @Test("the small print under a title says only what the title does not")
+    func detail() {
+        #expect(Sample.task(1, "Plain").widgetDetail == "")
+        #expect(Sample.task(1, status: .inProgress).widgetDetail == "In progress")
+        #expect(Sample.task(1, status: .blocked, project: "taxes").widgetDetail == "Blocked · #taxes")
+        #expect(Sample.task(1, project: "home", tags: ["errand"], assignee: .claude).widgetDetail == "With Claude · #home", "tags are left to the app")
+        var listed = Sample.task(1, status: .inProgress, project: "taxes")
+        listed.subtasks = [Subtask(id: 1, title: "a", done: true), Subtask(id: 2, title: "b", done: false), Subtask(id: 3, title: "c", done: true)]
+        #expect(listed.widgetDetail == "In progress · #taxes · 2/3")
+        #expect(Sample.task(1, project: "").widgetDetail == "")
+    }
+
     @Test("the summary counts what is due")
     func summary() {
         #expect(overview.summary == "2 due today · 2 overdue")

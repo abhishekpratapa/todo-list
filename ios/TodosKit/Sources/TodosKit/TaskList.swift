@@ -145,10 +145,24 @@ extension [TodoTask] {
 
 // MARK: - What is due (for the widget)
 
+extension TodoTask {
+    /// The small print under a task's title, where the widget has room for it: where
+    /// the task stands if it is under way or stuck, whether Claude has it, its project,
+    /// and how far its checklist has got. Empty when there is nothing to add to the title.
+    public var widgetDetail: String {
+        var parts: [String] = []
+        if status == .inProgress || status == .blocked { parts.append(status.label) }
+        if assignee == .claude { parts.append("With Claude") }
+        if let project, !project.isEmpty { parts.append("#\(project)") }
+        if !subtasks.isEmpty { parts.append("\(subtasks.filter(\.done).count)/\(subtasks.count)") }
+        return parts.joined(separator: " · ")
+    }
+}
+
 /// The open tasks by how soon they are due: overdue, today, the days after, and the rest.
 /// This is what the widget shows.
 public struct DueOverview: Sendable, Equatable {
-    public enum Kind: Sendable, Equatable, Hashable {
+    public enum Kind: String, Sendable, Equatable, Hashable, Codable {
         case overdue, today, upcoming, later
 
         public var label: String {
@@ -196,6 +210,9 @@ public struct DueOverview: Sendable, Equatable {
     /// Overdue and due today together: what needs doing now.
     public var dueNow: [TodoTask] { overdue + today }
 
+    /// How many open tasks there are in all.
+    public var count: Int { overdue.count + today.count + upcoming.count + later.count }
+
     /// "2 due today · 1 overdue"
     public var summary: String {
         var parts: [String] = []
@@ -216,7 +233,6 @@ public struct DueOverview: Sendable, Equatable {
             out.append(Section(kind: kind, tasks: shown))
             left -= shown.count + 1
         }
-        let total = overdue.count + today.count + upcoming.count + later.count
-        return (out, total - out.reduce(0) { $0 + $1.tasks.count })
+        return (out, count - out.reduce(0) { $0 + $1.tasks.count })
     }
 }

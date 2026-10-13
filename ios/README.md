@@ -146,7 +146,7 @@ There are two: **Due Today** for tasks and **Habits**. Touch and hold the home s
 | Size | Shows |
 | --- | --- |
 | Small, medium | The count, and the first three or four tasks that are overdue or due today. |
-| Large | The same under **Overdue** and **Today** headings, then **Coming up** (due in the next seven days, with the day) and, where there is still room, **Also open** (everything else that is not done). It fits as many lines as the text size allows and says how many tasks were left out. |
+| Large | The same under **Overdue** and **Today** headings, then **Coming up** (due in the next seven days, with the day) and, where there is still room, **Also open** (everything else that is not done). It uses the room it has. With a short list each title is shown in full, on up to three lines, with a line under it for what the title doesn't say: in progress or blocked, with Claude, its project, how far its checklist has got. As the list grows the small print goes, and then the first tasks keep a second line for as long as there is room. A long list is one line a task, as many as the text size allows, with a count of the rest. |
 | Lock screen | The count and the first two tasks. |
 
 **Habits.** Each habit has a round button that checks it in without opening the app: its next time of day, or for a habit counted in weeks, today's visit. Tapping a habit's name opens it.
