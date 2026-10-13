@@ -190,7 +190,8 @@ final class AppModel {
     /// The app came to the front: connect for live updates, send what is waiting, load the list.
     func activate() async {
         guard phase == .paired else { return }
-        await store?.reloadChanges() // the share sheet may have added some while the app was away
+        await store?.reloadChanges() // the share sheet or a widget may have added some while the app was away
+        await store?.reloadHabits() // and a widget keeps what the Mac answered its check-in with
         await reload()
         startLive()
         await sync()
@@ -202,6 +203,7 @@ final class AppModel {
         await start()
         guard phase == .paired else { return }
         await store?.reloadChanges()
+        await store?.reloadHabits()
         compatibilityChecked = false
         await sync()
     }
@@ -480,6 +482,8 @@ final class AppModel {
 
     enum OutsideCheckIn: Equatable {
         case checkedIn, alreadyDone, tooLate, notFound, notPaired
+        /// The habit has no time of day by that name. These are the ones it has.
+        case noSuchSlot([String])
     }
 
     /// A check-in from outside the app: the Done button on a reminder, a widget, a Shortcut.
@@ -489,12 +493,24 @@ final class AppModel {
         await start()
         guard phase == .paired, let store else { return .notPaired }
         await store.reloadChanges() // a widget may have added some while the app was away
+        await store.reloadHabits()
         await reload()
         guard let habit = habit(id) else { return .notFound }
         let day = day ?? habit.today.day
         guard day == habit.today.day || day == habit.yesterday.day else { return .tooLate }
-        guard habit.isOpen(slot: slot, on: day) else { return .alreadyDone }
-        await checkIn(habit, slot: slot, yesterday: day != habit.today.day, source: source)
+        // A time of day may be given by its id or by its name ("Evening").
+        var chosen = slot
+        if let slot, !habit.isWeekly {
+            let wanted = slot.trimmingCharacters(in: .whitespaces).lowercased()
+            guard let match = habit.schedule.slots.first(where: { $0.id == wanted || $0.name.lowercased() == wanted }) else {
+                return .noSuchSlot(habit.schedule.slots.map { $0.name.isEmpty ? $0.id : $0.name })
+            }
+            chosen = match.id
+        } else if habit.isWeekly {
+            chosen = nil
+        }
+        guard habit.isOpen(slot: chosen, on: day) else { return .alreadyDone }
+        await checkIn(habit, slot: chosen, yesterday: day != habit.today.day, source: source)
         return .checkedIn
     }
 

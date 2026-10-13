@@ -361,6 +361,31 @@ struct HabitIntegrationTests {
         #expect(try await phone.habits().zone == "Asia/Tokyo")
     }
 
+    @Test("a check-in from the widget's button reaches the Mac, marked as the widget's, and once")
+    func fromTheWidget() async throws {
+        let made = try hub.habitCreate(["name": "Brush teeth", "schedule": Self.twice])
+        try await engine.refreshHabits()
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("todoskit-widget-\(UUID().uuidString)", isDirectory: true)
+        let widget = LocalStore(directory: folder) // the same folder the app writes, as the widget finds it
+        await widget.replaceHabits(await store.habits.habits, version: nil, zone: Self.zone.identifier)
+
+        let result = await WidgetCheckIn.perform(habit: made.id, slot: "morning", in: folder, client: phone, zone: Self.zone)
+        #expect(result.outcome == .sent && result.slot == "morning")
+        let seen = try await phone.habit(made.id)
+        #expect(seen.today.slots[0].done && seen.today.slots[0].source == "widget" && seen.today.slots[0].via == "iPhone")
+        #expect(LocalStore.readHabits(directory: folder).habits.first?.today.slots[0].done == true, "what the Mac answered is kept for the app")
+
+        // The Mac out of reach: saved, shown, and sent later by whoever runs next.
+        try hub.command("listening", ["on": false])
+        let waiting = await WidgetCheckIn.perform(habit: made.id, slot: "evening", in: folder, client: phone, zone: Self.zone, patience: 1)
+        #expect(waiting.outcome == .waiting)
+        #expect(await WidgetCheckIn.perform(habit: made.id, in: folder, client: phone, zone: Self.zone, patience: 1).outcome == .nothingToDo, "the widget already shows it done")
+        try hub.command("listening", ["on": true])
+        #expect(await SyncEngine(client: phone, store: LocalStore(directory: folder)).replay() == .finished)
+        let after = try await phone.habitHistory(made.id)
+        #expect(after.events.map(\.slot) == ["morning", "evening"] && after.events.allSatisfy { $0.source == "widget" })
+    }
+
     @Test("habits are announced on the live connection, separately from the list")
     func liveUpdates() async throws {
         let made = try hub.habitCreate(["name": "Brush teeth", "schedule": Self.twice])

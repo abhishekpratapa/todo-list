@@ -231,5 +231,6 @@ struct DueWidget: Widget {
 struct TodosWidgets: WidgetBundle {
     var body: some Widget {
         DueWidget()
+        HabitsWidget()
     }
 }

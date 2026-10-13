@@ -2,12 +2,12 @@
 
 A native iPhone app for the list kept by the Todos app on your Mac. The Mac stays the only copy: the iPhone reaches it over your Tailscale tailnet, through the same `/api/v1` any other client uses (`docs/openapi.json`).
 
-It does pairing, the task list and detail, editing, quick capture, habits with streaks, and live updates, and it keeps working without a connection: the list is kept on the iPhone, and changes made offline are sent when the Mac can be reached again. It also has reminders as notifications on the iPhone, a widget, a Shortcuts action (for Siri and the Action button too) and a share sheet extension.
+It does pairing, the task list and detail, editing, quick capture, habits with streaks, and live updates, and it keeps working without a connection: the list is kept on the iPhone, and changes made offline are sent when the Mac can be reached again. It also has reminders as notifications on the iPhone, two widgets (one with buttons that check in habits), Shortcuts actions (for Siri and the Action button too) and a share sheet extension.
 
 ```
 Todos.xcodeproj   the Xcode project (app and its tests)
 Todos/            the app: SwiftUI views and AppModel, the state they share
-TodosWidget/      the home screen and lock screen widget
+TodosWidget/      the home screen and lock screen widgets
 TodosShare/       the share sheet extension
 TodosTests/       tests that run inside the app: Keychain storage, pairing, offline use
 TodosKit/         a Swift package with everything that has no user interface:
@@ -110,6 +110,7 @@ The **Habits** tab is for routines you check in on: brushing your teeth morning 
 - **A habit.** Tap its name for the streak and the best one, today and yesterday, a calendar of the last 18 weeks, completion over 7, 30 and 365 days, and **Skip Today**, **Pause**, **Archive** and **Delete**. The calendar is drawn from the Mac's record, so it needs the Mac to be reachable.
 - **New habit.** The **+** button offers Twice a Day, Every Day and 3 Times a Week, and opens a form already filled in: name, emoji and color, when it repeats, each time of day with its reminder time, the hours it belongs in and an optional second reminder, and when the habit's day starts (3 AM unless you change it).
 - **Offline.** Check-ins, taking one back, and rest days all work with no connection. They show at once, with the streak they will give, and are sent in order when the Mac can be reached; each says when and where it was really made, so one made on Monday and delivered on Thursday is Monday's. If days go by with no connection, the phone works out for itself how the days in between went, by the same rules as the Mac, and the Mac's answer replaces that the next time it is reached.
+- **Without opening the app.** A habit can also be checked in from its reminder (**Done**), from the [Habits widget](#widgets), and from Shortcuts or Siri with [**Log Habit**](#shortcuts-siri-and-the-action-button). All three go through the same queue as a check-in made in the app.
 - **What needs the Mac.** Making, editing, pausing, archiving and deleting a habit. If the Mac can't be reached you are told so, and nothing is queued: a habit the Mac hasn't accepted has nothing useful to show.
 - **Travel.** A check-in counts for the date where you are. The app tells the Mac which time zone the phone is in whenever it differs, so "today" follows you.
 
@@ -126,7 +127,7 @@ Reminders are local notifications scheduled on the iPhone itself, from what the 
 
 - **When.** At each time of day's reminder time, and again at its second reminder time if it still isn't done. For a habit counted in weeks, on its reminder days until the week is met. Times are local wherever you are: 7:30 is 7:30 at home and abroad.
 - **Done** on the notification checks in without opening the app. It goes through the same queue as a check-in made in the app, so it is kept if the Mac can't be reached and sent later. **Snooze 15 min** brings the same reminder back in a quarter of an hour. Tapping the notification itself opens the habit.
-- **Checking in early cancels the reminder** for that time of day, its second reminder, and anything about it already on screen or snoozed. A check-in made on the Mac or with the `todos` command cancels the phone's reminder only once the phone has heard of it: at once if the app is open, otherwise at its next background refresh.
+- **Checking in early cancels the reminder** for that time of day, its second reminder, and anything about it already on screen or snoozed. That goes for a check-in made in the app, on the widget or from Shortcuts. A check-in made on the Mac or with the `todos` command cancels the phone's reminder only once the phone has heard of it: at once if the app is open, otherwise at its next background refresh.
 - Yesterday's reminder still works the next day (it logs yesterday, late). One from further back says it is too late.
 
 **How they fit in what iOS allows.** iOS keeps at most 64 waiting notifications for an app and silently forgets the rest, so reminders can't all be scheduled forever ahead. Instead the nearest are, and the schedule is laid out again every time the app runs: when you open it, when iOS wakes it to refresh, after every check-in, and after every Done or Snooze.
@@ -136,9 +137,11 @@ Reminders are local notifications scheduled on the iPhone itself, from what the 
 - **Never silently.** The first reminder that did not fit is replaced, at its time, by a notice saying that reminders stop there until Todos is opened. Settings shows the date habit reminders are scheduled through.
 - If there are so many that today's and tomorrow's don't all fit, second reminders are left out before any first reminder is, and Settings says so.
 
-### Widget
+### Widgets
 
-Touch and hold the home screen, tap **Edit → Add Widget**, choose **Todos**, swipe to the size you want and tap **Add Widget**. Tapping a task in the widget opens it.
+There are two: **Due Today** for tasks and **Habits**. Touch and hold the home screen, tap **Edit → Add Widget**, choose **Todos**, swipe to the one and the size you want and tap **Add Widget**.
+
+**Due Today.** Tapping a task opens it.
 
 | Size | Shows |
 | --- | --- |
@@ -146,21 +149,43 @@ Touch and hold the home screen, tap **Edit → Add Widget**, choose **Todos**, s
 | Large | The same under **Overdue** and **Today** headings, then **Coming up** (due in the next seven days, with the day) and, where there is still room, **Also open** (everything else that is not done). It fits as many lines as the text size allows and says how many tasks were left out. |
 | Lock screen | The count and the first two tasks. |
 
+**Habits.** Each habit has a round button that checks it in without opening the app: its next time of day, or for a habit counted in weeks, today's visit. Tapping a habit's name opens it.
+
+| Size | Shows |
+| --- | --- |
+| Small | The next habit to do, with its streak and its button, and how many more there are. |
+| Medium, large | How many are left today, then three habits (medium) or seven (large): what is still to do, soonest first, then what is done. Each has how today stands, its streak and its button. |
+| Lock screen | Rectangular: how many are left and the next two. Circular: a ring of today's progress around the number left. Inline, beside the date: how many are left. These have no button. |
+
+- **What the button does.** The check-in is saved on the iPhone first, so the widget shows it at once and nothing is lost. Then the widget tries for a few seconds to send it to the Mac itself. If the Mac can't be reached in that time, the app sends it the next time it runs (when you open it, or when iOS wakes it to refresh). Either way it is recorded once, with the time of the tap.
+- The reminder for that time of day, and its second reminder, are taken away as soon as the button is tapped.
+- The button only checks in. To take a check-in back, or to log yesterday, open the app.
+- A widget drawn before the habit's day turned over (3 AM unless you changed it) checks in the day it was showing, as long as that day can still be logged.
+
 Large is the biggest size iOS offers on an iPhone: it takes four of a page's six rows of icons. iOS gives neither an app nor a Mac a way to put a widget on the home screen for you.
 
 If an update adds a size and a widget that was already on the home screen won't take it (it flashes and goes back to the size it had), remove that widget and add it again, or restart the iPhone. iOS keeps the old list of sizes for a widget that is already placed until the home screen restarts. Seen on iOS 26 when the large size was added.
 
-The widget reads the list kept on the iPhone, with your waiting changes applied, so it shows what the app shows. It does not contact the Mac itself: it updates when the app does, and at midnight.
+Both widgets read what is kept on the iPhone, with your waiting changes applied, so they show what the app shows. Due Today does not contact the Mac at all; Habits does only to send a check-in made with its button. They update when the app does, after a tap on a button, and when the day turns over (midnight for tasks, the habit's day start for habits).
 
 ### Shortcuts, Siri and the Action button
 
-The app adds an **Add Task** action to Shortcuts. It takes one line, read exactly like quick capture.
+The app adds two actions to Shortcuts.
+
+**Add Task** takes one line, read exactly like quick capture.
 
 - **Siri:** "Add a task in Todos", then say the task.
 - **Action button:** Settings → Action Button → Shortcut → choose **Add Task** under Todos.
 - **Shortcuts:** use **Add Task** in any shortcut, for example after **Dictate Text**.
 
 If the Mac can't be reached, the line is saved on the iPhone and added later, and the answer says so. This replaces the Shortcut described in the main README that calls the Mac directly, and unlike that one it needs no token in the shortcut.
+
+**Log Habit** checks in a habit. It takes the habit, chosen from the ones on this iPhone, and optionally a time of day by name ("Evening"); left empty, it is whichever is still to do.
+
+- **Siri:** "Log Brush teeth in Todos" or "Check in Floss in Todos"; "Log a habit in Todos" asks which.
+- **Automations:** use **Log Habit** in a personal automation in the Shortcuts app, for example **When I finish a workout → Log Gym**, or when you arrive somewhere.
+- The answer says how the day stands and the streak ("That's today done, and 12 days in a row"), or that the habit was already done. If the Mac can't be reached, the check-in is kept on the iPhone and sent later, and the answer says so.
+- The Mac keeps where each check-in came from: these are recorded with the source `shortcut`, the widget's with `widget`, a reminder's **Done** with `notification`.
 
 ### Share sheet
 
@@ -199,8 +224,8 @@ ios/scripts/test.sh
 
 That runs two things:
 
-1. **TodosKit** with `swift test`, on the Mac. The unit tests cover the API client, version checks, live-update parsing, pairing codes, connection diagnosis, list grouping, Markdown, the list kept on disk, the queue of changes and its replay, conflict detection and merging, and habits: what the Mac sends, what is sent back, the habit day across time zones and clock changes, and the phone's own reckoning. The integration tests start a real Todos server (`ios/scripts/test-server.mjs`, the Mac app's own server code) and cover CRUD, quick capture, live updates, conflicts, a revoked token, remote access being off and the wrong Tailscale account. They also cover offline use: an edit made offline while the Mac edits the same task ends with nothing lost, a line captured offline is read as of when it was typed and added once even if sent twice, and changes keep waiting through a rotated token or an unreachable Mac. For habits, they hold the phone's own reckoning to the Mac's: the phone is given what the Mac said on some day, makes check-ins "offline" over the days and weeks that follow, and at each point its answer (today, yesterday, the streak, what is at risk) must be what the real server says at that same moment once those changes reach it. The server's clock is pinned for each question, so the days are whatever the test says.
-2. **The app's tests** in the iOS Simulator: Keychain storage (including the group shared with the share extension), pairing, opening with no connection, changes made offline and sent later, conflicts and how they are settled, unpairing, tasks added by a Shortcut or the share sheet, what the widget and reminders are given, and habits: checking in with and without a connection, taking a check-in back, rest days, a Mac too old to have habits, and making and changing a habit.
+1. **TodosKit** with `swift test`, on the Mac. The unit tests cover the API client, version checks, live-update parsing, pairing codes, connection diagnosis, list grouping, Markdown, the list kept on disk, the queue of changes and its replay, conflict detection and merging, and habits: what the Mac sends, what is sent back, the habit day across time zones and clock changes, the phone's own reckoning, the reminder schedule and its limit of 64, and a check-in made from the widget (saved first, sent if it can be, never twice). The integration tests start a real Todos server (`ios/scripts/test-server.mjs`, the Mac app's own server code) and cover CRUD, quick capture, live updates, conflicts, a revoked token, remote access being off and the wrong Tailscale account. They also cover offline use: an edit made offline while the Mac edits the same task ends with nothing lost, a line captured offline is read as of when it was typed and added once even if sent twice, and changes keep waiting through a rotated token or an unreachable Mac. For habits, they hold the phone's own reckoning to the Mac's: the phone is given what the Mac said on some day, makes check-ins "offline" over the days and weeks that follow, and at each point its answer (today, yesterday, the streak, what is at risk) must be what the real server says at that same moment once those changes reach it. The server's clock is pinned for each question, so the days are whatever the test says.
+2. **The app's tests** in the iOS Simulator: Keychain storage (including the group shared with the share extension), pairing, opening with no connection, changes made offline and sent later, conflicts and how they are settled, unpairing, tasks added by a Shortcut or the share sheet, what the widget and reminders are given, and habits: checking in with and without a connection, taking a check-in back, rest days, a Mac too old to have habits, making and changing a habit, the Done and Snooze buttons on a reminder, reminders cancelled by a check-in, the Log Habit action, and the app picking up a check-in the widget made.
 
 The integration tests never touch your real list. The server they start uses a data directory created fresh in the system's temporary folder and deleted afterwards, with its own access token.
 
@@ -221,6 +246,6 @@ This runs the app in the iOS Simulator against the same throwaway server the int
 - Nothing is cached by the networking layer: no cookies, no URL cache.
 - The copy of the list and the changes waiting to be sent are files in the app's own app-group container. iOS encrypts them with the device's passcode; they can be read once the iPhone has been unlocked after a restart. Each Mac has its own folder, so pairing with a different Mac never shows the first one's list. **Unpair This iPhone** deletes them.
 - The pairing QR code carries the token itself. The Mac shows it only in its own window, leaves that window out of screenshots and screen sharing, and closes it after a minute.
-- The share extension sends what it adds, so it needs the token. The app and that extension share one Keychain group (`N3366NR59J.com.abhishekpratapa.todos.shared`); nothing else can read it. The widget has no access to the token and never uses the network.
+- The share extension sends what it adds, so it needs the token. The app and that extension share one Keychain group (`N3366NR59J.com.abhishekpratapa.todos.shared`); nothing else can read it. The widget extension is in that group as well, since the Habits widget's button sends a check-in. That is the only request it makes: it reads nothing from the Mac, and the Due Today widget never uses the network.
 - Reminder notifications show a task's title on the lock screen, like any notification. iOS's own notification settings for Todos control that.
 - No signing keys, certificates or provisioning profiles are in the repository; `.gitignore` keeps them out. The team identifier in the project file is not a secret.

@@ -6,5 +6,9 @@
 	<array>
 		<string>group.com.abhishekpratapa.todos</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.abhishekpratapa.todos.shared</string>
+	</array>
 </dict>
 </plist>

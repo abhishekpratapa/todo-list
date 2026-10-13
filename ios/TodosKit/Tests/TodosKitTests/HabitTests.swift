@@ -560,3 +560,85 @@ struct HabitTextTests {
         #expect(HabitText.rate(0.934) == "93%" && HabitText.rate(1) == "100%" && HabitText.rate(nil) == "–")
     }
 }
+
+@Suite("Habits: the widget's button")
+struct WidgetCheckInTests {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("todoskit-widget-tests-\(UUID().uuidString)", isDirectory: true)
+    let zone = HabitSample.chicago
+    let stub = StubTransport()
+    func at(_ stamp: String) -> Date { HabitSample.at(stamp) }
+
+    /// The phone as the app left it: the sample habits, kept on disk. (Wednesday 7 October; Brush teeth's morning is done.)
+    func kept() async -> LocalStore {
+        let store = LocalStore(directory: directory)
+        await store.replaceHabits(HabitSample.list.habits, version: 9, zone: zone.identifier)
+        return store
+    }
+
+    func tap(_ habit: Int, slot: String? = nil, day: String? = nil, _ stamp: String, client: HubClient? = nil) async -> WidgetCheckIn.Result {
+        await WidgetCheckIn.perform(habit: habit, slot: slot, day: day.flatMap(Day.init), in: directory, client: client, now: at(stamp), zone: zone, patience: 2)
+    }
+
+    @Test("with no way to reach the Mac the check-in is saved for the app to send, and shows meanwhile")
+    func saved() async {
+        _ = await kept()
+        let result = await tap(1, "2026-10-07 21:40")
+        #expect(result == .init(outcome: .waiting, slot: "evening", day: Day("2026-10-07")))
+        // Another process, the app or the widget drawing itself, finds it in the queue.
+        let read = LocalStore.read(directory: directory).changes
+        #expect(read.count == 1)
+        guard case .checkIn(1, "Brush teeth", "evening", Day("2026-10-07")!, let when, "America/Chicago", .widget, false)? = read.first?.kind else {
+            Issue.record("expected a check-in from the widget to be waiting")
+            return
+        }
+        #expect(when == at("2026-10-07 21:40"))
+        let shown = LocalStore.readHabits(directory: directory).habits.reckoned(with: read, now: at("2026-10-07 21:41"), zone: zone)
+        #expect(shown[0].today.isComplete && shown[0].streak.current == 3)
+        // Tapped again before the widget has redrawn: nothing is left, so nothing more is saved.
+        #expect(await tap(1, "2026-10-07 21:42").outcome == .nothingToDo)
+        #expect(LocalStore.read(directory: directory).changes.count == 1)
+    }
+
+    @Test("with the Mac in reach it is sent at once, and what the Mac answers is kept for the app")
+    func sent() async {
+        _ = await kept()
+        var done = HabitSample.brush
+        done.today.slots[1] = HabitDay.Slot(id: "evening", done: true, at: at("2026-10-07 21:40"), by: "me", via: "iPhone", source: "widget", checkins: [8])
+        done.today.state = .done
+        done.streak.current = 3
+        stub.reply(201, "{\"habit\":\(HabitSample.json(done)),\"checkin\":null}")
+        let result = await tap(1, "2026-10-07 21:40", client: Sample.client(stub))
+        #expect(result.outcome == .sent && result.slot == "evening")
+        #expect(stub.last.url?.path == "/api/v1/habits/1/checkins" && stub.body()["source"] as? String == "widget" && stub.last.value(forHTTPHeaderField: "Idempotency-Key") != nil)
+        #expect(LocalStore.read(directory: directory).changes.isEmpty)
+        #expect(LocalStore.readHabits(directory: directory).habits[0].streak.current == 3)
+
+        // The Mac can't be reached: it doesn't keep anyone waiting, and the check-in stays for later.
+        let gone = StubTransport()
+        gone.fail(.timedOut)
+        #expect(await tap(2, day: "2026-10-06", "2026-10-07 21:45", client: Sample.client(gone)).outcome == .waiting)
+        #expect(LocalStore.read(directory: directory).changes.count == 1)
+    }
+
+    @Test("which slot, which day, and when there is nothing to do")
+    func choosing() async {
+        _ = await kept()
+        // A widget drawn yesterday and tapped today still means the day it showed.
+        let late = await tap(2, day: "2026-10-06", "2026-10-07 21:40")
+        #expect(late == .init(outcome: .waiting, slot: nil, day: Day("2026-10-06")), "the gym, for yesterday")
+        guard case .checkIn(_, _, nil, _, _, _, .widget, true)? = LocalStore.read(directory: directory).changes.last?.kind else {
+            Issue.record("expected it to be marked as logged late")
+            return
+        }
+        #expect(await tap(2, "2026-10-07 21:40").outcome == .nothingToDo, "the gym was already checked in today")
+        #expect(await tap(1, slot: "morning", "2026-10-07 21:40").outcome == .nothingToDo, "this morning is done")
+        #expect(await tap(1, day: "2026-10-04", "2026-10-07 21:40").outcome == .nothingToDo, "too long ago to log")
+        #expect(await tap(99, "2026-10-07 21:40").outcome == .nothingToDo, "no such habit any more")
+        // The next day, with both still to do: the one whose time it is.
+        #expect(await tap(1, "2026-10-08 21:00").slot == "evening")
+        #expect(await tap(1, "2026-10-08 21:05").slot == "morning", "then whatever is left")
+        #expect(await WidgetCheckIn.perform(habit: 1, in: nil, client: nil).outcome == .notPaired)
+        #expect(WidgetCheckIn.notifications(habit: 1, slot: "evening", day: Day("2026-10-07")!) == ["habit-1-evening-2026-10-07", "habit-1-evening-2026-10-07-nudge", "snooze-1-evening-2026-10-07"])
+        #expect(AppLinks.habit(from: AppLinks.habit(12)) == 12 && AppLinks.habit(from: AppLinks.task(12)) == nil && AppLinks.task(from: AppLinks.habit(12)) == nil)
+    }
+}

@@ -58,5 +58,11 @@ struct TodosShortcuts: AppShortcutsProvider {
             shortTitle: "Add Task",
             systemImageName: "plus.circle"
         )
+        AppShortcut(
+            intent: LogHabitIntent(),
+            phrases: ["Log a habit in \(.applicationName)", "Log \(\.$habit) in \(.applicationName)", "Check in \(\.$habit) in \(.applicationName)"],
+            shortTitle: "Log Habit",
+            systemImageName: "flame"
+        )
     }
 }

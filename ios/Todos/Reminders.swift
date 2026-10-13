@@ -164,7 +164,7 @@ final class Reminders {
     func done(_ identifier: String, model: AppModel) async {
         guard let target = PlannedNotification.habitTarget(of: identifier) else { return }
         switch await model.checkInFromOutside(habit: target.habit, slot: target.slot, day: target.day, source: .notification) {
-        case .checkedIn, .alreadyDone, .notPaired:
+        case .checkedIn, .alreadyDone, .notPaired, .noSuchSlot:
             break // rescheduling, which the check-in sets off, clears what is left for this slot
         case .tooLate:
             await centre.say(id: "habit-info", title: "Too late to log that one", body: "Yesterday can be logged until the end of today, and no further back. Today’s is still open in Todos.")

@@ -238,6 +238,67 @@ struct HabitAppTests {
         #expect(await model.deleteHabit(try #require(model.habits.first)) == nil && model.habits.isEmpty && mac.allHabits.filter { !$0.archived }.isEmpty)
     }
 
+    @Test("Log Habit from Shortcuts or Siri: by the habit, optionally by a time of day's name, with an answer that says how the day stands")
+    func fromShortcuts() async throws {
+        defer { cleanUp() }
+        let brush = mac.addHabit("Brush teeth", streak: 6)
+        let gym = mac.addHabit("Gym", weekly: 2)
+        let model = await paired()
+
+        #expect(await model.checkInFromOutside(habit: brush.id, slot: "Evening", source: .shortcut) == .checkedIn)
+        #expect(mac.habit(brush.id)?.today.slots.map(\.done) == [false, true], "named as the user would say it")
+        let sent = try #require(mac.writes.last?.httpBody)
+        #expect((try JSONSerialization.jsonObject(with: sent) as? [String: Any])?["source"] as? String == "shortcut")
+        #expect(LogHabitText.logged(model.habit(brush.id), name: "Brush teeth", waiting: false) == "Logged Brush teeth. Still to do today: morning.")
+        #expect(await model.checkInFromOutside(habit: brush.id, slot: "evening", source: .shortcut) == .alreadyDone)
+        #expect(await model.checkInFromOutside(habit: brush.id, slot: "lunchtime", source: .shortcut) == .noSuchSlot(["Morning", "Evening"]))
+
+        // With no time of day named, it is whichever is still to do.
+        #expect(await model.checkInFromOutside(habit: brush.id, slot: nil, source: .shortcut) == .checkedIn)
+        #expect(LogHabitText.logged(model.habit(brush.id), name: "Brush teeth", waiting: false) == "Logged Brush teeth. That’s today done, and 7 days in a row.")
+        #expect(await model.checkInFromOutside(habit: brush.id, slot: nil, source: .shortcut) == .alreadyDone)
+
+        // A habit counted in weeks has no times of day; one given is ignored.
+        #expect(await model.checkInFromOutside(habit: gym.id, slot: "Evening", source: .shortcut) == .checkedIn)
+        #expect(LogHabitText.logged(model.habit(gym.id), name: "Gym", waiting: false) == "Logged Gym. That’s 1 of 2 this week.")
+        #expect(await model.checkInFromOutside(habit: 99, slot: nil, source: .shortcut) == .notFound)
+
+        // With no connection it is kept, and the answer says so.
+        mac.isUnreachable = true
+        let floss = mac.addHabit("Floss", slots: ["once"])
+        mac.isUnreachable = false
+        await model.refreshHabits()
+        mac.isUnreachable = true
+        #expect(await model.checkInFromOutside(habit: floss.id, slot: nil, source: .shortcut) == .checkedIn)
+        #expect(LogHabitText.logged(model.habit(floss.id), name: "Floss", waiting: model.hasWaitingChanges(habit: floss.id)) == "Logged Floss. That’s today done. It will reach your Mac when it can be reached.")
+
+        // Shortcuts finds habits by name from what the phone keeps, with no connection.
+        #expect(LocalStore.readHabits(directory: try #require(SharedContainer.currentHubDirectory(in: directory))).habits.map(\.name) == ["Brush teeth", "Gym", "Floss"])
+    }
+
+    @Test("a check-in the widget made while the app was away is there when the app comes back")
+    func afterTheWidget() async throws {
+        defer { cleanUp() }
+        let brush = mac.addHabit("Brush teeth")
+        let model = await paired()
+        model.deactivate()
+        // The widget's button: saved in the same folder, and sent by the widget itself.
+        let folder = try #require(SharedContainer.currentHubDirectory(in: directory))
+        let result = await WidgetCheckIn.perform(habit: brush.id, slot: "morning", in: folder, client: mac.client(credentials))
+        #expect(result.outcome == .sent && mac.habit(brush.id)?.today.slots[0].done == true)
+        #expect(model.habit(brush.id)?.today.slots[0].done == false, "the app has not looked yet")
+        await model.activate()
+        #expect(model.habit(brush.id)?.today.slots[0].done == true && model.changes.isEmpty)
+
+        // And one the widget could only save: the app sends it.
+        mac.isUnreachable = true
+        #expect(await WidgetCheckIn.perform(habit: brush.id, slot: "evening", in: folder, client: mac.client(credentials), patience: 0.3).outcome == .waiting)
+        mac.isUnreachable = false
+        await model.activate()
+        #expect(await eventually { model.changes.isEmpty })
+        #expect(mac.habit(brush.id)?.today.isComplete == true && model.habit(brush.id)?.today.isComplete == true)
+    }
+
     @Test("unpairing forgets the habits kept here")
     func unpairing() async throws {
         defer { cleanUp() }

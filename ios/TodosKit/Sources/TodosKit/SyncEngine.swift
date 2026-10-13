@@ -237,6 +237,18 @@ public struct SyncEngine: Sendable {
         _ = await store.replace(change, with: change.kind, state: .rejected(message: error.serverMessage ?? "Your Mac refused this change."))
     }
 
+    /// Sends waiting changes, but stops waiting after `seconds`: for an extension or a
+    /// widget's button, which must not keep the user (or iOS) waiting on a Mac that
+    /// can't be reached. Whatever was not sent stays in the queue for the app.
+    public func replay(givingUpAfter seconds: Double) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = await replay() }
+            group.addTask { try? await Task.sleep(for: .seconds(seconds)) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
     // MARK: Fetching
 
     /// Fetches the whole list and stores it. Then fetches the histories (comments and

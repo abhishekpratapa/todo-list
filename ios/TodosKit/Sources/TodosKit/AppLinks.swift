@@ -2,9 +2,18 @@
 
 import Foundation
 
-/// todos-app://task/7 opens task 7. Links carry nothing secret.
+/// todos-app://task/7 opens task 7, and todos-app://habit/2 habit 2. Links carry nothing secret.
 public enum AppLinks {
     public static let scheme = "todos-app"
+
+    public static func habit(_ id: Int) -> URL {
+        URL(string: "\(scheme)://habit/\(id)")!
+    }
+
+    public static func habit(from url: URL) -> Int? {
+        guard url.scheme == scheme, url.host() == "habit" else { return nil }
+        return Int(url.lastPathComponent)
+    }
 
     public static func task(_ id: Int) -> URL {
         URL(string: "\(scheme)://task/\(id)")!

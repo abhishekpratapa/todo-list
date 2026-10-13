@@ -17,6 +17,7 @@ struct TodosApp: App {
                 .environment(model)
                 .onOpenURL { url in
                     if let task = AppLinks.task(from: url) { model.requestedTask = task }
+                    if let habit = AppLinks.habit(from: url) { model.requestedHabit = habit }
                 }
         }
         // Only this one modifier on the scene. With a second (watching the scene phase here as
@@ -45,6 +46,7 @@ extension AppModel {
         model.didReload = { tasks, habits in
             await Reminders.shared.reschedule(tasks: tasks, habits: habits)
             WidgetCenter.shared.reloadAllTimelines()
+            TodosShortcuts.updateAppShortcutParameters() // so Siri knows the habits by name
         }
         return model
     }()

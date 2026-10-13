@@ -110,6 +110,12 @@ public actor LocalStore {
         saveHabits()
     }
 
+    /// Reads the habits again from disk, to pick up what another process stored: a
+    /// widget keeps the habit the Mac answers its check-in with.
+    public func reloadHabits() {
+        habits = Self.readHabits(at: habitsFile)
+    }
+
     /// The Mac has no habits at all: its Todos is older than they are.
     public func habitsUnsupported() {
         guard habits.supported != false else { return }
