@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What the release build (npm run dist:release) asks the hardened runtime to allow,
+  for the app and each of its helpers. Only JIT compilation, which V8 needs: in
+  the windows, and in the app run as Node for the MCP server. This is the same
+  as Electron's own defaults for its renderer and GPU helpers.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+  </dict>
+</plist>

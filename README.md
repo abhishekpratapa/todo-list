@@ -32,9 +32,23 @@ ios/                 the iPhone app (see ios/README.md)
 
 ## Install
 
-Open `dist/Todos-<version>-arm64.dmg` and drag **Todos** to Applications.
+Open `dist/Todos-<version>-arm64.dmg` and drag **Todos** to Applications. It runs on Apple silicon Macs.
 
-The build is ad-hoc signed, not notarized. It opens normally on the Mac that built it. On another Mac, right-click the app and choose **Open** the first time.
+`npm run dist` makes an ad-hoc signed build, which opens normally only on the Mac that built it. For other Macs, make a release build instead (below): signed with a Developer ID, notarized by Apple and stapled, it opens without a warning anywhere, even offline.
+
+### A release build, for other Macs
+
+```bash
+npm run dist:release
+```
+
+It needs, once: a **Developer ID Application** certificate in your keychain (Xcode → Settings → Accounts → Manage Certificates), and notarization credentials saved in the keychain:
+
+```bash
+xcrun notarytool store-credentials todos-notary --team-id <your team ID>
+```
+
+That asks for your Apple ID and an app-specific password (account.apple.com → Sign-In and Security → App-Specific Passwords). The build then signs the app and the command inside it with the hardened runtime, has Apple notarize the app and staples the ticket to it, makes the DMG from that app, and notarizes and staples the DMG too, so the app keeps its ticket after it is copied out. It finishes by checking all of that the way Gatekeeper on another Mac would. `npm run dist:release -- --sign-only` stops after signing. `TODOS_SIGN_IDENTITY` picks a certificate when there is more than one, and `TODOS_NOTARY_PROFILE` names a different keychain profile.
 
 ## Quick capture
 
@@ -360,6 +374,7 @@ npm run test:app   # tests that run the real app, in the background, as a separa
 ios/scripts/test.sh     # the iPhone app's tests (see ios/README.md)
 ios/scripts/install.sh  # build the iPhone app and install it on a connected iPhone
 npm run dist       # build the todos command (needs Go), then dist/Todos-<version>-arm64.dmg
+npm run dist:release  # the same, signed, notarized and stapled for other Macs (see Install)
 ```
 
 `npm run dist` first runs `cli/build.sh` and puts its result in the app bundle. It stops with a message if Go isn't installed or the build produces anything other than a macOS arm64 program.

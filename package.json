@@ -16,7 +16,8 @@
     "test:app": "node --test --test-concurrency=1 \"test/app/*.test.js\"",
     "app": "electron .",
     "icon": "python3 scripts/make-icon.py",
-    "dist": "node scripts/build-cli.js && electron-builder --mac"
+    "dist": "node scripts/build-cli.js && electron-builder --mac",
+    "dist:release": "node scripts/release.js"
   },
   "devDependencies": {
     "electron": "^44.5.1",
