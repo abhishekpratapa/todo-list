@@ -6,7 +6,8 @@
 // socket open, since that is how the app runs it.
 //
 // Known, intended differences, each checked here rather than ignored:
-//   - GET /api/v1/meta reports API revision 5 instead of 3.
+//   - GET /api/v1/meta reports API revision 5 instead of 3, and the app's own
+//     version from package.json instead of 1.6.1.
 //   - The dashboard's page and its script (/, /index.html, /app.js) gained the
 //     Habits section. The stylesheet is untouched: habits have their own.
 //   - The MCP server offers the habit tools after the ones it had, and its
@@ -350,7 +351,9 @@ test('with remote access on, the API, the dashboard and every refusal are what 1
     'phone: GET /api/v1/meta': (after, earlier) => {
       assert.equal(earlier.body.api.revision, 3);
       assert.equal(after.body.api.revision, 5);
-      assert.deepEqual({ ...after, body: { ...after.body, api: { ...after.body.api, revision: 3 } } }, earlier);
+      assert.equal(earlier.body.app.version, '1.6.1');
+      assert.equal(after.body.app.version, JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version);
+      assert.deepEqual({ ...after, body: { api: { ...after.body.api, revision: 3 }, app: { ...after.body.app, version: '1.6.1' } } }, earlier);
     },
   });
   // Enough was exercised for this to mean something.
