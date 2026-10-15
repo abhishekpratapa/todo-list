@@ -292,7 +292,7 @@
           "Session"
         ],
         "summary": "What does this server speak?",
-        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`. Revision 3 (Todos 1.6) added the `Idempotency-Key` header on every change, and `at` on `/capture` and `/capture/preview`. Revision 4 added `GET /info` and the local socket. Revision 5 added habits. Revision 6 added the `X-Todos-Claude-Session` header on every change.",
+        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`. Revision 3 (Todos 1.6) added the `Idempotency-Key` header on every change, and `at` on `/capture` and `/capture/preview`. Revision 4 added `GET /info` and the local socket. Revision 5 added habits. Revision 6 (Todos 1.7) added the `X-Todos-Claude-Session` header on every change.",
         "responses": {
           "200": {
             "description": "The API version and revision, and the app that is serving it.",

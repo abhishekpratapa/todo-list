@@ -33,7 +33,7 @@ import {
 //   4  The release with the command-line client. GET /info; the whole API on the local
 //      socket (see socket.js), where a few routes exist that are served nowhere else.
 //   5  Habits: everything under /habits, and a `habits` event in the live updates.
-//   6  X-Todos-Claude-Session on every change, so a Claude session that reaches this
+//   6  Todos 1.7. X-Todos-Claude-Session on every change, so a Claude session that reaches this
 //      list from another Mac is credited with what it does.
 export const API_VERSION = 1;
 export const API_REVISION = 6;
