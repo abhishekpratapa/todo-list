@@ -7,6 +7,12 @@ dist/
 # local test data never belongs in the repo
 /data/
 *.tmp
+# local secrets and per-user settings never belong in the repo either
+.env
+.env.*
+.claude/settings.local.json
+# where a plain `go build` in cli/ puts the binary (cli/build.sh uses cli/dist/)
+/cli/todos
 
 # iPhone app: build output, and anything per-user or secret
 ios/build/
