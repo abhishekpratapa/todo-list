@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 // Minimal MCP server over stdio (newline-delimited JSON-RPC 2.0), no dependencies.
 // Each Claude session spawns its own copy; they all share the store in store.js.
+//
+// When this Mac uses another Mac's list (Todos → Use Another Mac's List…), the
+// tools work on that list instead, through the Todos app on this Mac (see
+// app-client.js). The changes are credited to the session there as they would
+// be here, with X-Todos-Claude-Session.
 
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +16,7 @@ import {
 } from './store.js';
 import { HABIT_COLORS, checkIn, createHabit, deleteHabit, getHabit, habitHistory, listHabits, undo } from './habits.js';
 import * as habitText from './habit-text.js';
+import { createAppClient, hostInUse } from './app-client.js';
 
 const SUPPORTED_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -95,6 +101,117 @@ function summaryLine(s) {
   return `${parts.join(' · ')}  (today is ${today()})`;
 }
 
+// ---------- where the list is ----------
+
+// This Mac's own list, in its files.
+const here = {
+  listTodos: (args) => listTodos({ limit: 100, ...args }),
+  getTodo: (id) => getTodo(id),
+  addTodo: (args) => createTodo(args, actor),
+  updateTodo: (id, patch) => updateTodo(id, patch, actor),
+  complete: (id, comment) => updateTodo(id, { status: 'done', comment }, actor),
+  deleteTodo: (id) => deleteTodo(id),
+  listHabits: ({ archived }) => listHabits({ archived }),
+  getHabit: (id) => getHabit(id),
+  checkIn: (id, input) => checkIn(id, input, actor),
+  habitHistory: (id, range) => habitHistory(id, range),
+  undo: (id, input) => undo(id, input, actor),
+  addHabit: (input) => createHabit(input, actor),
+  deleteHabit: (id) => deleteHabit(id),
+};
+
+const TASK_FIELDS = ['title', 'notes', 'status', 'priority', 'due', 'project', 'tags', 'assignee', 'repeat'];
+const pick = (from, keys) => Object.fromEntries(keys.filter((k) => from[k] !== undefined).map((k) => [k, from[k]]));
+const idOf = (id) => {
+  const n = String(id ?? '').replace(/^#/, '');
+  if (!/^\d+$/.test(n)) throw new TodoError(`No todo with id #${id}`);
+  return n;
+};
+const listArg = (v) => (v === undefined || v === null ? [] : Array.isArray(v) ? v : [v]);
+
+// Another Mac's list, through the Todos app on this Mac, which passes it on.
+// Answers in the same shapes as `here`.
+function there(app) {
+  async function call(method, p, body, headers) {
+    let res;
+    try {
+      res = await app.request(method, p, body, headers);
+    } catch (e) {
+      throw new TodoError(`Couldn't reach the Todos app on this Mac: ${e.message}`);
+    }
+    if (res.status >= 400) throw new TodoError(res.body?.error?.message || `The Todos app answered ${res.status}.`);
+    return res.body;
+  }
+  const overwrite = { 'if-match': '*' }; // as on this Mac, where a session's change is not checked against a revision
+  const list = {
+    async listTodos({ status, project, tag, assignee, query, overdue, limit } = {}) {
+      const q = new URLSearchParams({ status: status || 'open', limit: String(limit || 100) });
+      if (project) q.set('project', project);
+      if (tag) q.set('tag', tag);
+      if (assignee) q.set('assignee', assignee);
+      if (query) q.set('q', query);
+      if (overdue) q.set('due', 'overdue');
+      const { tasks, total, summary } = await call('GET', `/api/v1/tasks?${q}`);
+      return { todos: tasks, total, summary };
+    },
+    getTodo: async (id) => (await call('GET', `/api/v1/tasks/${idOf(id)}`)).task,
+    async addTodo(args) {
+      const body = { ...pick(args, TASK_FIELDS), ...(args.remind_at !== undefined ? { remindAt: args.remind_at } : {}) };
+      if (args.subtasks) body.subtasks = args.subtasks;
+      let { task } = await call('POST', '/api/v1/tasks', body);
+      if (args.comment) ({ task } = await call('POST', `/api/v1/tasks/${task.id}/comments`, { text: args.comment }));
+      return task;
+    },
+    async updateTodo(id, patch) {
+      const n = idOf(id);
+      const fields = pick(patch, TASK_FIELDS);
+      if (patch.remind_at !== undefined) fields.remindAt = patch.remind_at;
+      let task = null;
+      let next = null;
+      if (Object.keys(fields).length) ({ task, next } = await call('PATCH', `/api/v1/tasks/${n}`, fields, overwrite));
+      if (listArg(patch.add_subtasks).length) ({ task } = await call('POST', `/api/v1/tasks/${n}/subtasks`, { titles: listArg(patch.add_subtasks) }));
+      for (const sub of listArg(patch.check_subtasks)) ({ task } = await call('PATCH', `/api/v1/tasks/${n}/subtasks/${sub}`, { done: true }));
+      for (const sub of listArg(patch.uncheck_subtasks)) ({ task } = await call('PATCH', `/api/v1/tasks/${n}/subtasks/${sub}`, { done: false }));
+      for (const sub of listArg(patch.remove_subtasks)) ({ task } = await call('DELETE', `/api/v1/tasks/${n}/subtasks/${sub}`));
+      if (patch.comment) ({ task } = await call('POST', `/api/v1/tasks/${n}/comments`, { text: patch.comment }));
+      return { todo: task || (await list.getTodo(n)), next: next || null };
+    },
+    async complete(id, comment) {
+      const { task, next } = await call('POST', `/api/v1/tasks/${idOf(id)}/complete`, comment ? { comment } : undefined);
+      return { todo: task, next: next || null };
+    },
+    async deleteTodo(id) {
+      const task = await list.getTodo(id);
+      await call('DELETE', `/api/v1/tasks/${task.id}`, undefined, overwrite);
+      return task;
+    },
+    listHabits: ({ archived }) => call('GET', `/api/v1/habits${archived ? '?archived=true' : ''}`),
+    getHabit: async (id) => (await call('GET', `/api/v1/habits/${idOf(id)}`)).habit,
+    checkIn: (id, input) => call('POST', `/api/v1/habits/${idOf(id)}/checkins`, pick(input, ['slot', 'day', 'source'])),
+    habitHistory: (id, { from, to }) => call('GET', `/api/v1/habits/${idOf(id)}/history?${new URLSearchParams({ from, to })}`),
+    undo: async (id, input) => ({ habit: (await call('POST', `/api/v1/habits/${idOf(id)}/undo`, input)).habit }),
+    addHabit: async (input) => (await call('POST', '/api/v1/habits', input)).habit,
+    async deleteHabit(id) {
+      const habit = await list.getHabit(id);
+      await call('DELETE', `/api/v1/habits/${habit.id}`, undefined, overwrite);
+      return habit;
+    },
+  };
+  return list;
+}
+
+// Which list a tool works on: this Mac's own, or the other Mac's it uses. Asked on
+// every call, so switching in the app takes effect at once.
+async function theList() {
+  const host = hostInUse();
+  if (!host) return here;
+  const app = createAppClient({ headers: { 'x-todos-claude-session': actor } });
+  if (!(await app.ready())) {
+    throw new TodoError(`This Mac uses the todo list on ${host.name}, through the Todos app, which isn't running and couldn't be started. Open Todos on this Mac and try again.`);
+  }
+  return there(app);
+}
+
 // ---------- tools ----------
 
 const fieldProps = {
@@ -129,8 +246,8 @@ const TOOLS = [
       },
     },
     annotations: { readOnlyHint: true },
-    run(args) {
-      const { todos, total, summary } = listTodos({ limit: 100, ...args });
+    async run(args, list) {
+      const { todos, total, summary } = await list.listTodos(args);
       const body = todos.length ? todos.map(line).join('\n') : '(no matching todos)';
       const more = total > todos.length ? `\n…and ${total - todos.length} more (raise limit or narrow filters)` : '';
       return `${summaryLine(summary)}\n\n${body}${more}`;
@@ -142,7 +259,7 @@ const TOOLS = [
     description: 'Get one todo with its full notes and activity history.',
     inputSchema: { type: 'object', properties: { id: { type: 'integer' } }, required: ['id'] },
     annotations: { readOnlyHint: true },
-    run: ({ id }) => detail(getTodo(id)),
+    run: async ({ id }, list) => detail(await list.getTodo(id)),
   },
   {
     name: 'todo_add',
@@ -158,8 +275,8 @@ const TOOLS = [
       },
       required: ['title'],
     },
-    run(args) {
-      const t = createTodo(args, actor);
+    async run(args, list) {
+      const t = await list.addTodo(args);
       return `Added ${line(t)}`;
     },
   },
@@ -181,8 +298,8 @@ const TOOLS = [
       },
       required: ['id'],
     },
-    run({ id, ...patch }) {
-      const { todo, next } = updateTodo(id, patch, actor);
+    async run({ id, ...patch }, list) {
+      const { todo, next } = await list.updateTodo(id, patch);
       return `Updated ${line(todo)}${nextLine(next)}`;
     },
   },
@@ -198,16 +315,18 @@ const TOOLS = [
       },
       required: ['ids'],
     },
-    run({ ids, comment }) {
-      return ids.map((id) => {
+    async run({ ids, comment }, list) {
+      const lines = [];
+      for (const id of ids) {
         try {
-          const { todo, next } = updateTodo(id, { status: 'done', comment }, actor);
-          return `Completed ${line(todo)}${nextLine(next)}`;
+          const { todo, next } = await list.complete(id, comment);
+          lines.push(`Completed ${line(todo)}${nextLine(next)}`);
         } catch (e) {
-          if (e instanceof TodoError) return `Error on #${id}: ${e.message}`;
-          throw e;
+          if (e instanceof TodoError) lines.push(`Error on #${id}: ${e.message}`);
+          else throw e;
         }
-      }).join('\n');
+      }
+      return lines.join('\n');
     },
   },
   {
@@ -216,8 +335,8 @@ const TOOLS = [
     description: 'Permanently delete a todo. Only use this when the user asks, or for an item that was added by mistake or is a duplicate. To close a finished item, use todo_complete.',
     inputSchema: { type: 'object', properties: { id: { type: 'integer' } }, required: ['id'] },
     annotations: { destructiveHint: true },
-    run({ id }) {
-      const t = deleteTodo(id);
+    async run({ id }, list) {
+      const t = await list.deleteTodo(id);
       return `Deleted #${t.id} ${t.title}`;
     },
   },
@@ -232,8 +351,8 @@ const habitDayArg = { type: 'string', enum: ['today', 'yesterday'], description:
 // "Brush teeth (evening)", "Gym for yesterday".
 const logged = (habit, slot, day) => `${habit.name}${slot ? ` (${habitText.slotName(habit, slot).toLowerCase()})` : ''}${day === 'yesterday' ? ' for yesterday' : ''}`;
 
-function habitList({ archived = false } = {}) {
-  const { habits } = listHabits({ archived });
+async function habitList({ archived = false } = {}, list) {
+  const { habits } = await list.listHabits({ archived });
   if (!habits.length) return '(no habits yet)';
   const current = habits.filter((h) => !h.archived);
   const { due, done, off } = habitText.forToday(current);
@@ -258,13 +377,13 @@ TOOLS.push(
     title: 'Log a habit',
     description: 'Check in one of the user\'s habits: record that they did it. Use this when the user tells you they did something they track as a habit ("I just flossed", "log the gym for yesterday"). Don\'t log a habit on a guess.',
     inputSchema: { type: 'object', properties: { id: habitId, slot: habitSlot, day: habitDayArg }, required: ['id'] },
-    run({ id, slot, day }) {
+    async run({ id, slot, day }, list) {
       const already = (habit) => `Nothing to log: ${habit.name} is already checked in${day === 'yesterday' ? ' for yesterday' : ' for today'}.\n${habitText.line(habit)}`;
       // A habit counted in weeks takes one visit a day. A second would be recorded and count for nothing.
-      const before = getHabit(id);
+      const before = await list.getHabit(id);
       const which = { today: 'today', yesterday: 'yesterday' }[day ?? 'today']; // anything else is for checkIn to refuse
       if (before.schedule.kind === 'weekly' && (slot === undefined || slot === null) && which && before[which].done) return already(before);
-      const { habit, checkin } = checkIn(id, { slot, day, source: 'claude' }, actor);
+      const { habit, checkin } = await list.checkIn(id, { slot, day, source: 'claude' });
       if (!checkin) return already(habit);
       return `Logged ${logged(habit, checkin.slot, day)}.\n${habitText.detail(habit)}`;
     },
@@ -274,19 +393,19 @@ TOOLS.push(
     title: 'Take back a habit check-in',
     description: 'Take back a check-in that a Claude session logged, for one logged by mistake. Check-ins the user made themselves (in the app, on their iPhone, from the command line) are left alone: those are theirs to take back.',
     inputSchema: { type: 'object', properties: { id: habitId, slot: habitSlot, day: habitDayArg }, required: ['id'] },
-    run({ id, slot, day }) {
-      const habit = getHabit(id);
+    async run({ id, slot, day }, list) {
+      const habit = await list.getHabit(id);
       const on = habit[day === 'yesterday' ? 'yesterday' : 'today'].day;
       const wanted = slot === undefined || slot === null ? null : String(slot).trim().toLowerCase();
       const known = habit.schedule.slots?.find((s) => s.id === wanted || s.name.toLowerCase() === wanted);
       if (wanted !== null && !known) throw new TodoError(`"${habit.name}" has no slot "${slot}".`);
-      const standing = habitHistory(id, { from: on, to: on }).events.filter((e) => e.kind === 'done' && !e.undone && (!known || e.slot === known.id));
+      const standing = (await list.habitHistory(id, { from: on, to: on })).events.filter((e) => e.kind === 'done' && !e.undone && (!known || e.slot === known.id));
       const ours = standing.filter((e) => e.source === 'claude');
       if (!ours.length) {
         const others = standing.length ? ' It is checked in, but not by a Claude session, so it was left as it is.' : '';
         return `Nothing to take back: no Claude session logged ${logged(habit, known?.id, day)}.${others}\n${habitText.line(habit)}`;
       }
-      const after = undo(id, { checkins: ours.map((e) => e.id) }, actor).habit;
+      const after = (await list.undo(id, { checkins: ours.map((e) => e.id) })).habit;
       return `Took back the check-in: ${logged(habit, known?.id, day)}.\n${habitText.line(after)}`;
     },
   },
@@ -308,8 +427,8 @@ TOOLS.push(
       },
       required: ['name', 'schedule'],
     },
-    run({ day_start: dayStart, ...input }) {
-      const habit = createHabit(dayStart === undefined ? input : { ...input, dayStart }, actor);
+    async run({ day_start: dayStart, ...input }, list) {
+      const habit = await list.addHabit(dayStart === undefined ? input : { ...input, dayStart });
       return `Added habit ${habitText.detail(habit)}`;
     },
   },
@@ -319,8 +438,8 @@ TOOLS.push(
     description: 'Permanently delete a habit together with its whole history and streak. Only use this when the user explicitly asks you to delete it. To stop a habit and keep its history, the user can pause or archive it in the Todos app instead.',
     inputSchema: { type: 'object', properties: { id: habitId }, required: ['id'] },
     annotations: { destructiveHint: true },
-    run({ id }) {
-      const habit = deleteHabit(id);
+    async run({ id }, list) {
+      const habit = await list.deleteHabit(id);
       return `Deleted habit #${habit.id} ${habit.name}`;
     },
   },
@@ -332,7 +451,7 @@ const send = (msg) => process.stdout.write(JSON.stringify(msg) + '\n');
 const reply = (id, result) => send({ jsonrpc: '2.0', id, result });
 const fail = (id, code, message) => send({ jsonrpc: '2.0', id, error: { code, message } });
 
-function handle(msg) {
+async function handle(msg) {
   const { id, method, params = {} } = msg;
   const isRequest = id !== undefined && id !== null;
 
@@ -355,7 +474,7 @@ function handle(msg) {
       const tool = TOOLS.find((t) => t.name === params.name);
       if (!tool) return fail(id, -32602, `Unknown tool: ${params.name}`);
       try {
-        return reply(id, { content: [{ type: 'text', text: tool.run(params.arguments || {}) }] });
+        return reply(id, { content: [{ type: 'text', text: await tool.run(params.arguments || {}, await theList()) }] });
       } catch (e) {
         if (!(e instanceof TodoError)) console.error(e);
         return reply(id, { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true });
@@ -366,6 +485,8 @@ function handle(msg) {
   }
 }
 
+// Messages are handled one at a time, in order, so answers come back in the order asked.
+let queue = Promise.resolve();
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', (text) => {
   if (!text.trim()) return;
@@ -375,6 +496,6 @@ rl.on('line', (text) => {
   } catch {
     return fail(null, -32700, 'Parse error');
   }
-  for (const m of Array.isArray(msg) ? msg : [msg]) handle(m);
+  for (const m of Array.isArray(msg) ? msg : [msg]) queue = queue.then(() => handle(m)).catch((e) => console.error(e));
 });
-rl.on('close', () => process.exit(0));
+rl.on('close', () => queue.then(() => process.exit(0)));

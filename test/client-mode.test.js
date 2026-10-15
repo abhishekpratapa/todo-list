@@ -257,7 +257,7 @@ test('a Claude session on this Mac is credited with its changes on the host', as
   await sock('POST', `/api/v1/tasks/${task.id}/comments`, { body: { text: 'Looking into it' }, headers: claude });
   await sock('POST', `/api/v1/tasks/${task.id}/complete`, { headers: claude });
   const entries = hostTask(task.id).activity.slice(1);
-  assert.deepEqual(entries.map((a) => [a.by, a.via]), [['Claude Code · my-repo', `${LABEL} (Claude Code)`], ['Claude Code · my-repo', `${LABEL} (Claude Code)`]]);
+  assert.deepEqual(entries.map((a) => [a.by, a.via]), [['Claude Code · my-repo', LABEL], ['Claude Code · my-repo', LABEL]], 'the session names itself; the label is this Mac');
 });
 
 test('the marker only ever names a Claude session, and changes nothing else', async () => {
@@ -364,6 +364,107 @@ test('the server switches between the host\'s list and this Mac\'s own while it 
     assert.equal((await ask('/api/todos')).body.host, hostName(host.url));
   } finally {
     s.close();
+  }
+});
+
+// ---------- Claude sessions on this Mac ----------
+
+// A Claude Code session's MCP server on this Mac, started in `cwd` as Claude starts it.
+// `settings` is what the app's settings say; `data` is the file this Mac's own list is in.
+async function mcpSession({ settings, socket = client.socket, data = process.env.TODO_DATA_FILE }) {
+  const userData = fs.mkdtempSync(path.join(tmp, 'mcp-user-'));
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify(settings));
+  const cwd = path.join(tmp, 'my-repo');
+  fs.mkdirSync(cwd, { recursive: true });
+  const child = spawn(process.execPath, [path.join(REPO, 'src', 'mcp.js')], { cwd, env: { ...process.env, TODO_DATA_FILE: data, TODOS_USER_DATA: userData, TODOS_SOCKET: socket }, stdio: ['pipe', 'pipe', 'inherit'] });
+  const waiting = new Map();
+  readline.createInterface({ input: child.stdout }).on('line', (l) => {
+    const msg = JSON.parse(l);
+    waiting.get(msg.id)?.(msg);
+  });
+  let id = 0;
+  const ask = (method, params) => new Promise((resolve) => {
+    waiting.set(++id, resolve);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+  });
+  await ask('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code', version: '2.0.0' } });
+  return {
+    // A tool's answer: { text, error }.
+    async call(name, args = {}) {
+      const { result } = await ask('tools/call', { name, arguments: args });
+      return { text: result.content[0].text, error: !!result.isError };
+    },
+    close: () => child.kill(),
+  };
+}
+
+test('Claude sessions on this Mac work on the host\'s list, and are credited with what they do there', async () => {
+  const claude = await mcpSession({ settings: { host: { url: host.url.origin, name: hostName(host.url) } } });
+  const ACTOR = 'Claude Code · my-repo';
+  try {
+    const added = await claude.call('todo_add', { title: 'From Claude on the other Mac', priority: 'high', subtasks: ['first', 'second'], comment: 'Starting on it', remind_at: '+2h' });
+    assert.equal(added.error, false, added.text);
+    const id = Number(added.text.match(/#(\d+)/)[1]);
+    const made = hostTask(id);
+    assert.equal(made.title, 'From Claude on the other Mac');
+    assert.equal(made.createdBy, ACTOR);
+    assert.ok(made.remindAt);
+    assert.deepEqual(made.activity.map((a) => [a.by, a.kind, a.via]), [[ACTOR, 'event', LABEL], [ACTOR, 'comment', LABEL]]);
+
+    const listed = (await claude.call('todo_list', { query: 'other Mac' })).text;
+    assert.match(listed, new RegExp(`#${id} \\[To do\\] From Claude on the other Mac`));
+    assert.doesNotMatch((await claude.call('todo_list', { status: 'all' })).text, /This Mac's own task/);
+    assert.match((await claude.call('todo_get', { id })).text, /Starting on it/);
+
+    const updated = await claude.call('todo_update', { id, status: 'in_progress', assignee: 'claude', check_subtasks: [1], add_subtasks: ['third'], comment: 'Halfway' });
+    assert.equal(updated.error, false, updated.text);
+    const after = hostTask(id);
+    assert.deepEqual([after.status, after.assignee], ['in_progress', 'claude']);
+    assert.deepEqual(after.subtasks.map((st) => [st.title, st.done]), [['first', true], ['second', false], ['third', false]]);
+    assert.deepEqual(after.activity.slice(-1).map((a) => [a.by, a.text]), [[ACTOR, 'Halfway']]);
+
+    assert.match((await claude.call('todo_complete', { ids: [id, 999999], comment: 'All done' })).text, /Completed #\d+ \[Done\][\s\S]*Error on #999999/);
+    assert.equal(hostTask(id).status, 'done');
+    const extra = Number((await claude.call('todo_add', { title: 'Added by mistake' })).text.match(/#(\d+)/)[1]);
+    assert.match((await claude.call('todo_delete', { id: extra })).text, /Deleted #\d+ Added by mistake/);
+    assert.equal(hostTask(extra), undefined);
+    assert.equal((await claude.call('todo_get', { id: 999999 })).error, true);
+
+    // Habits too.
+    const habit = await claude.call('habit_add', { name: 'Floss', schedule: { kind: 'daily', slots: [{ name: '' }] } });
+    assert.equal(habit.error, false, habit.text);
+    const habitId = (await atHost('GET', '/api/v1/habits')).body.habits.find((h) => h.name === 'Floss').id;
+    assert.match((await claude.call('habit_log', { id: habitId })).text, /^Logged Floss/);
+    assert.equal((await atHost('GET', `/api/v1/habits/${habitId}`)).body.habit.today.state, 'done');
+    assert.match((await claude.call('habit_list')).text, /Floss/);
+    assert.match((await claude.call('habit_undo', { id: habitId })).text, /^Took back the check-in: Floss/);
+    assert.notEqual((await atHost('GET', `/api/v1/habits/${habitId}`)).body.habit.today.state, 'done');
+    assert.match((await claude.call('habit_delete', { id: habitId })).text, /Deleted habit #\d+ Floss/);
+  } finally {
+    claude.close();
+  }
+});
+
+test('on this Mac\'s own list, the MCP server works on this Mac\'s files, as it always has', async () => {
+  const data = path.join(tmp, 'own-list', 'data', 'todos.json');
+  const claude = await mcpSession({ settings: { host: null }, data });
+  try {
+    assert.match((await claude.call('todo_add', { title: 'Kept on this Mac' })).text, /^Added #1/);
+    assert.equal(JSON.parse(fs.readFileSync(data, 'utf8')).todos[0].title, 'Kept on this Mac');
+    assert.equal(hostList().some((t) => t.title === 'Kept on this Mac'), false);
+  } finally {
+    claude.close();
+  }
+});
+
+test('when the app on this Mac isn\'t answering, a Claude session is told, and nothing is written here', async () => {
+  const claude = await mcpSession({ settings: { host: { url: host.url.origin, name: 'the-host' } }, socket: path.join(socketDir, 'nobody.sock') });
+  try {
+    const answer = await claude.call('todo_add', { title: 'Nowhere to go' });
+    assert.equal(answer.error, true);
+    assert.match(answer.text, /uses the todo list on the-host, through the Todos app, which isn't running/);
+  } finally {
+    claude.close();
   }
 });
 

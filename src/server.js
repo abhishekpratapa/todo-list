@@ -352,7 +352,9 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
   async function v1ViaHost(req, res, ctx, url) {
     const p = url.pathname.slice('/api/v1'.length);
     const refuseHere = (status, code, message) => json(res, status, { error: { code, message } });
-    const as = cleanLabel(req.headers['x-todos-client']) || 'command line';
+    // Labelled with this Mac and what asked: "(command line)", or what the client calls itself.
+    // A Claude session is named by X-Todos-Claude-Session instead, so it is just this Mac.
+    const as = req.headers['x-todos-claude-session'] ? null : cleanLabel(req.headers['x-todos-client']) || 'command line';
     if (p === '/session') return req.method === 'GET' ? json(res, 200, { kind: 'local' }) : refuseHere(404, 'not_found', 'No such endpoint.');
     const cs = p.match(/^\/tasks\/(\d+)\/claude-session$/);
     if (cs) {
