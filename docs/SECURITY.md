@@ -64,6 +64,20 @@ While the app runs, its server also listens on a Unix domain socket: `~/Library/
 
 **Install Command Line Tool.** This makes one symbolic link, `~/.local/bin/todos`, pointing at the copy of the command inside the app. It is done as you: no password is asked for and nothing runs as root. It never replaces or removes anything it did not put there. To tell you whether a terminal will find the command, the app reads your shell's startup files and looks for that folder. It does not run them or a shell: anything they did would be done in the app's name, and macOS would then ask whether Todos may read whatever folders they touch. The command inside the app is signed the same way the app is: ad hoc by `npm run dist`; with a Developer ID, the hardened runtime and Apple's notarization by `npm run dist:release`.
 
+## A Mac that uses another Mac's list
+
+A second Mac can use the list on your main Mac instead of its own (Todos → Use Another Mac's List…). It is then one more device with the access token, like the iPhone, and goes through every check above on the main Mac.
+
+**The token.** The second Mac keeps the main Mac's token in `~/Library/Application Support/Todos/host-access-token`, readable only by your user (mode 0600), the same way the main Mac keeps its own. Only the app itself sends it, and only to the address you entered: HTTPS, which `tailscale serve` provides, or plain HTTP to the Mac itself. It is never put in a URL, a log or an answer. Switching back to the Mac's own list deletes it.
+
+**What reaches the main Mac through it.** The second Mac's own server passes requests on to the main Mac, so its window, quick capture and `todos` command work there. Only its own app's windows and its local socket are passed on. Nothing that arrives from elsewhere is, and its Remote Access stays off meanwhile. So the main Mac's list can be read and changed by whatever can already use the second Mac's own list: you, and other programs running as you on the second Mac.
+
+**Claude sessions on it.** They reach the main Mac's list through the second Mac's app, over its socket, and never see the token. Their changes carry `X-Todos-Claude-Session`, which the main Mac records as the change's author ("Claude Code · my-repo") instead of "you". Anyone with the token could send it: like the device labels, it says who did something and grants nothing. Only names that start with "Claude" or "Cowork" are taken; anything else is recorded as yours.
+
+**Reminders.** The main Mac decides when a reminder has been delivered. The second Mac shows it too, if its own switch is on, without marking it delivered there.
+
+**Starting Claude sessions.** On the second Mac, Start with Claude chooses folders on and runs programs on the second Mac, as it would with its own list. The main Mac's local-only routes are not involved: they still answer nothing at its network address.
+
 ## Conflicts
 
 Every task has a revision number that goes up with each change, whoever makes it. An edit or delete through the API must name the revision it is based on; if the task has changed since, the edit is refused with the current task rather than applied. The dashboard does the same for edits that replace a value. All writers (app, API, MCP server) go through one store and one file lock.
@@ -81,4 +95,4 @@ Every task has a revision number that goes up with each change, whoever makes it
 - **The iPhone app's extensions.** Its share sheet extension can send new tasks, so it shares the app's Keychain item through a Keychain group only the two of them belong to. Its widget only reads the copy of the list on the phone and has no access to the token.
 - **The iPhone app's copy.** That copy (tasks, notes, comments) and any changes waiting to be sent are stored on the iPhone, protected by its passcode and removed when the iPhone is unpaired in the app. Rotating the token stops the iPhone reaching the Mac; it does not erase what the iPhone already has.
 - **Tailscale itself.** Encryption in transit, device identity, and who is on your tailnet are Tailscale's job. If your tailnet's access rules let other people's devices reach this Mac, the account check and the token are what stand between them and your list.
-- The MCP server is not exposed over the network. Claude sessions on other machines can't use the list in this version.
+- The MCP server is not exposed over the network. Claude sessions on another machine reach the list only from a Mac that uses it through its own Todos app (see above), with the token held by that app.

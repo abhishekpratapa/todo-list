@@ -8,6 +8,7 @@ electron/capture-preload.cjs   bridge for the quick-capture panel
 electron/handoff.js  "Start with Claude": chooses the folder and opens a Claude session on a task
 electron/pairing.js  the "Pair iPhone" window
 electron/cli-install.js  "Install Command Line Tool": the link to the `todos` command inside the app
+electron/connect.js  the "Use Another Mac's List" window (public/connect.html)
 src/quickadd.js      one-line entry parser ("Renew passport fri !high #personal")
 public/              dashboard UI (vanilla HTML/CSS/JS); markdown.js renders notes safely
 src/store.js         shared JSON store with file locking (safe for many concurrent sessions)
@@ -15,6 +16,9 @@ src/server.js        dashboard server (REST API + live updates); embedded in the
 src/api-v1.js        /api/v1, the API for your other devices and the `todos` command (see docs/openapi.json)
 src/socket.js        the local socket the `todos` command uses on this Mac
 src/claude-session.js  what a "Start with Claude" session is started with, for the app's button and the command
+src/host.js          using another Mac's list: the connection to that Mac, which the server passes requests on through
+src/host-copy.js     copying this Mac's open tasks to the other Mac's list, when it is first used
+src/app-client.js    how the MCP server reaches the list through the app, when it is another Mac's
 src/auth.js          access token, session cookies, rate limits
 src/remote.js        remote-access state shared by the app and the server
 src/tailscale.js     reads Tailscale's state; sets up and removes the `tailscale serve` mapping
@@ -167,6 +171,26 @@ At the network address and on port 7420, the API only exists while remote access
 ### Keeping the Mac reachable
 
 Other devices can only reach Todos while the app is running and the Mac is awake and on Tailscale. Turn on **Todos → Launch at Login**, let Tailscale start at login, and keep the Mac from sleeping (System Settings → Energy; a display that sleeps is fine). When the Mac can't be reached, the page shows "Offline" and reconnects by itself; scripts and Shortcuts should treat a timeout as "try again later".
+
+## Using another Mac's list
+
+A second Mac can show and change the list kept on your main Mac, instead of keeping its own. Everything on it then works on that list: the window, the menu bar item and Dock badge, quick capture, reminders and notifications, Start with Claude, the `todos` command and Claude sessions.
+
+1. On the main Mac, turn on **Todos → Remote Access → Allow Access from My Other Devices** and set up Tailscale Serve if the app offers.
+2. On the second Mac, choose **Todos → Use Another Mac's List…**. Paste the main Mac's address (**Remote Access → Copy Address** there, including any port at the end, such as `:10000`) and its access token (**Copy Access Token**). Both Macs need Tailscale, signed in to the same account.
+3. The first time, the second Mac offers to copy its own open tasks to the main Mac's list. They are copied, not moved: the second Mac's own list is kept as it was.
+
+Both Macs need Todos 1.7 or later; the second Mac checks, and says so if the main Mac is older.
+
+While it uses the main Mac's list, the second Mac:
+
+- shows the main Mac's name on its board ("Live · my-mac") and in its menu bar menu;
+- labels its changes there with its own name, as the iPhone's are ("You · MacBook Air");
+- shows reminders and the daily summary under its own switches in the Todos menu, without taking them away from the main Mac;
+- starts Claude sessions in its own folders, and records them on the main Mac's list. Claude sessions on it change the main Mac's list and are credited there ("Claude Code · my-repo");
+- has Remote Access off: your other devices connect to the main Mac directly.
+
+If the main Mac can't be reached, the board says "Offline", changes are refused with a message, and nothing is kept on the second Mac; it picks up again by itself. If the main Mac's access token is rotated, the second Mac says so; choose **Todos → Reconnect to …** and enter the new one. **Todos → Use This Mac's Own List** switches back.
 
 ## The `todos` command
 
