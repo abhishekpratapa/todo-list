@@ -32,6 +32,7 @@ const state = {
   showAllDone: false,
   openId: null,
   handoff: null, // { target, folders: { project: '~/path' } } when the desktop app can start Claude sessions
+  host: null, // the other Mac whose list this is, when the app is set to use one
   handoffChoice: null, // target picked in the drawer; the app remembers it once a session is started
   editingNotes: false,
   flash: new Set(), // ids changed by Claude since the last refresh, highlighted once
@@ -147,6 +148,8 @@ async function refresh() {
     }
     state.todos = data.todos;
     state.handoff = data.handoff || null;
+    state.host = data.host || null;
+    if ($('#live').classList.contains('on')) showLive();
     $('#page-foot').hidden = data.session !== 'remote'; // only a signed-in browser has anything to sign out of
     state.summary = data.summary;
     state.version = data.version;
@@ -212,6 +215,16 @@ function patch(id, fields, { guard = false } = {}) {
   return sending;
 }
 
+// The "Live" badge, which also says whose list this is when it is another Mac's.
+function showLive() {
+  const live = $('#live');
+  live.className = 'live on';
+  live.textContent = state.host ? `Live · ${state.host}` : 'Live';
+  live.title = state.host
+    ? `This is the list on ${state.host}. Changes made there, or by Claude sessions, appear here automatically`
+    : 'Changes from Claude sessions appear here automatically';
+}
+
 function connect() {
   const live = $('#live');
   const es = new EventSource('/api/events');
@@ -219,9 +232,7 @@ function connect() {
     if (JSON.parse(e.data).version !== state.version) refresh();
   };
   es.addEventListener('hello', (e) => {
-    live.className = 'live on';
-    live.textContent = 'Live';
-    live.title = 'Changes from Claude sessions appear here automatically';
+    showLive();
     onVersion(e);
     habits.refresh();
   });
@@ -231,7 +242,7 @@ function connect() {
   es.onerror = () => {
     live.className = 'live off';
     live.textContent = 'Offline';
-    live.title = 'Lost connection to the dashboard server. Retrying…';
+    live.title = state.host ? `Lost connection to ${state.host}. Retrying…` : 'Lost connection to the dashboard server. Retrying…';
     // The stream also drops when this device is signed out; api() sends us to sign in then.
     if (Date.now() - probed > 10_000) {
       probed = Date.now();

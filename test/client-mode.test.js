@@ -117,11 +117,15 @@ function listen(to, p, headers) {
           if (name) events.push(name[1]);
         }
       });
-      const until = async (name, ms = 3000) => {
-        for (const start = Date.now(); Date.now() - start < ms; await new Promise((r) => setTimeout(r, 20))) if (events.includes(name)) return true;
-        return events.includes(name);
+      let ended = false;
+      res.on('end', () => { ended = true; });
+      res.on('close', () => { ended = true; });
+      const wait = async (check, ms) => {
+        for (const start = Date.now(); Date.now() - start < ms; await new Promise((r) => setTimeout(r, 20))) if (check()) return true;
+        return check();
       };
-      resolve({ status: res.statusCode, events, until, close: () => req.destroy() });
+      const until = (name, ms = 3000) => wait(() => events.includes(name), ms);
+      resolve({ status: res.statusCode, events, until, endedByServer: (ms = 2000) => wait(() => ended, ms), close: () => req.destroy() });
     });
     req.on('error', reject);
     req.end();
@@ -308,6 +312,61 @@ test('Start with Claude on this Mac opens the session here and records it on the
   assert.equal((await sock('GET', '/api/v1/tasks/99999/claude-session')).status, 404);
 });
 
+// ---------- copying this Mac's tasks, and switching lists ----------
+
+test('this Mac\'s open tasks can be copied to the host, once each, with their checklists', async () => {
+  const { copyTasks, copyable } = await import('../src/host-copy.js');
+  const soon = new Date(Date.now() + 86_400_000).toISOString();
+  const past = new Date(Date.now() - 3_600_000).toISOString();
+  const at = '2026-10-01T10:00:00.000Z';
+  const todo = (id, extra) => ({ id, createdAt: at, title: `Task ${id}`, notes: '', status: 'todo', priority: 'medium', due: null, project: null, tags: [], assignee: 'me', repeat: null, remindAt: null, subtasks: [], ...extra });
+  const mine = [
+    todo(101, { title: 'Copied with everything', notes: 'some notes', status: 'in_progress', priority: 'high', due: '2027-01-02', project: 'alpha', tags: ['x', 'y'], assignee: 'claude', repeat: 'weekly', remindAt: soon, subtasks: [{ id: 1, title: 'one', done: true }, { id: 2, title: 'two', done: false }] }),
+    todo(102, { title: 'Its reminder is long past', remindAt: past }),
+    todo(103, { title: 'Already done', status: 'done' }),
+    todo(104, { title: '   ' }), // the host turns this one down
+  ];
+  const offered = copyable(mine);
+  assert.deepEqual(offered.map((t) => t.id), [101, 102, 104], 'done tasks are not offered');
+
+  const result = await copyTasks(host, offered);
+  assert.equal(result.copied, 2);
+  assert.deepEqual(result.failed.map((f) => f.title), ['   ']);
+  const copied = hostList().find((t) => t.title === 'Copied with everything');
+  assert.deepEqual(
+    [copied.notes, copied.status, copied.priority, copied.due, copied.project, copied.tags, copied.assignee, copied.repeat, copied.remindAt],
+    ['some notes', 'in_progress', 'high', '2027-01-02', 'alpha', ['x', 'y'], 'claude', 'weekly', soon],
+  );
+  assert.deepEqual(copied.subtasks.map((st) => [st.title, st.done]), [['one', true], ['two', false]]);
+  assert.equal(copied.activity[0].via, LABEL);
+  assert.equal(hostList().find((t) => t.title === 'Its reminder is long past').remindAt, null, 'not fired the moment it arrives');
+
+  // Copying again (a retry) adds nothing twice.
+  await copyTasks(host, offered);
+  assert.equal(hostList().filter((t) => t.title === 'Copied with everything').length, 1);
+  assert.equal(hostList().filter((t) => t.title === 'Its reminder is long past').length, 1);
+});
+
+test('the server switches between the host\'s list and this Mac\'s own while it runs', async () => {
+  const s = await startServer({ port: 0, host });
+  const ask = (p) => send(s.port, 'GET', p, { headers: { host: `127.0.0.1:${s.port}` } });
+  try {
+    assert.equal((await ask('/api/todos')).body.host, hostName(host.url));
+    s.setHost(null);
+    const own = await ask('/api/todos');
+    assert.deepEqual(own.body.todos.map((t) => t.title), ['This Mac\'s own task']);
+    assert.equal('host' in own.body, false);
+    // A live connection to the old list is ended, so the page reconnects to the new one.
+    const live = await listen(s.port, '/api/events', { host: `127.0.0.1:${s.port}` });
+    assert.ok(await live.until('hello'));
+    s.setHost(host);
+    assert.ok(await live.endedByServer());
+    assert.equal((await ask('/api/todos')).body.host, hostName(host.url));
+  } finally {
+    s.close();
+  }
+});
+
 // ---------- what can go wrong ----------
 
 test('nothing from anywhere else goes through this Mac to the host', async () => {
@@ -333,6 +392,19 @@ test('the access token never comes back from this Mac', async () => {
 });
 
 test('when the host can\'t be reached, the window and the command say so, and nothing is kept here', async () => {
+  const seen = [];
+  const stopFollowing = host.follow((name) => seen.push(name));
+  try {
+    await whileUnreachable(seen);
+  } finally {
+    stopFollowing();
+  }
+});
+
+async function whileUnreachable(seen) {
+  const hellos = () => seen.filter((e) => e === 'hello').length;
+  for (let i = 0; i < 100 && !hellos(); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(seen[0], 'hello', 'the host\'s live updates can be followed');
   await stopHost();
   const listed = await window('GET', '/api/todos');
   assert.equal(listed.status, 502);
@@ -349,16 +421,27 @@ test('when the host can\'t be reached, the window and the command say so, and no
   await startHost(); // the same port, data and token
   assert.equal((await window('GET', '/api/todos')).status, 200);
   assert.equal(host.state, 'ok');
+  // Following picks up again by itself once the host is back.
+  for (let i = 0; i < 400 && hellos() < 2; i++) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(hellos(), 2);
   assert.equal(hostList().some((t) => t.title === 'While the host is away'), false);
-});
+}
 
 test('a token rotated on the host is refused, and the connection says it needs the new one', async () => {
   const states = [];
   const off = host.onState((s) => states.push(s));
   hostProcess.stdin.write('rotate\n');
   const { token: fresh } = await hostProcess.next();
-  assert.equal((await window('GET', '/api/todos')).status, 401);
-  assert.equal((await sock('GET', '/api/v1/tasks')).status, 401);
+  // Not a 401: the page would look for a sign-in page, and the command would ask to be paired.
+  const listed = await window('GET', '/api/todos');
+  assert.equal(listed.status, 502);
+  assert.equal(listed.body.code, 'host_token_refused');
+  assert.match(listed.body.error, /Reconnect to/);
+  const added = await window('POST', '/api/todos', { body: { title: 'x' } });
+  assert.deepEqual([added.status, added.body.code], [502, 'host_token_refused']);
+  const viaSocket = await sock('GET', '/api/v1/tasks');
+  assert.deepEqual([viaSocket.status, viaSocket.body.error.code], [502, 'host_token_refused']);
+  assert.equal((await sock('GET', '/api/v1/tasks/1/claude-session')).body.error.code, 'host_token_refused');
   assert.equal(host.state, 'unauthorized');
   assert.deepEqual(states, ['unauthorized']);
   off();

@@ -126,6 +126,7 @@ export function sandbox({ settings = {}, env = {}, packaged = null } = {}) {
   };
   let pid = null;
   let launched = false;
+  let startsBefore = 0; // "started:" lines already in the log when this copy was last opened
 
   const app = {
     root, userData, dataFile, socketPath, log, lines, sources, bundle,
@@ -138,6 +139,7 @@ export function sandbox({ settings = {}, env = {}, packaged = null } = {}) {
     open(flags = [], args = []) {
       // -n for a packaged copy: the installed app has the same identifier, and must never be taken for this one.
       const setup = launched ? [] : [...(packaged ? ['-n'] : []), ...Object.entries(environment).flatMap(([k, v]) => ['--env', `${k}=${v}`]), '--stdout', log, '--stderr', log];
+      if (!launched) startsBefore = lines().filter((l) => l.startsWith('started: ')).length;
       launched = true;
       execFileSync('/usr/bin/open', [...flags, '-a', bundle, ...setup, '--args', ...(sources ? [sources] : []), ...args]);
     },
@@ -146,7 +148,8 @@ export function sandbox({ settings = {}, env = {}, packaged = null } = {}) {
     async started() {
       const health = await until(async () => (await ask(socketPath, 'GET', '/health'))?.status === 200);
       if (!health) throw new Error(`the app did not start:\n${lines().join('\n')}`);
-      const line = await until(() => lines().find((l) => l.startsWith('started: ')));
+      // The log is kept across restarts: the line wanted is the one this start wrote.
+      const line = await until(() => lines().filter((l) => l.startsWith('started: '))[startsBefore]);
       pid = Number(line.match(/pid=(\d+)/)[1]);
       return line;
     },
@@ -176,6 +179,7 @@ export function sandbox({ settings = {}, env = {}, packaged = null } = {}) {
       process.kill(pid, 'SIGTERM');
       const gone = await until(() => !alive(pid), 10_000);
       if (!gone) process.kill(pid, 'SIGKILL');
+      launched = false; // a later open() starts a fresh copy, which must be given its environment again
       return gone;
     },
 

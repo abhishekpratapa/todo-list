@@ -107,7 +107,7 @@ const STARTED = {
 //   record(todo, { comment, via, key, as })  the task becomes Claude's and gets the
 //                           note. On this Mac's own list unless given; a Mac that uses
 //                           another Mac's list records it there (see host.js).
-const recordHere = (todo, { comment, via, key }) => updateTodo(todo.id, { assignee: 'claude', comment }, 'me', { via, key });
+export const recordHere = (todo, { comment, via, key }) => updateTodo(todo.id, { assignee: 'claude', comment }, 'me', { via, key });
 
 export function createSessions({ folderFor = () => null, remember = () => {}, record = recordHere } = {}) {
   return {

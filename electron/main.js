@@ -5,6 +5,11 @@
 // for adding a task from any app.
 // The bundled MCP server (src/mcp.js) is launched separately by Claude, using
 // this app's binary in node mode (ELECTRON_RUN_AS_NODE=1).
+//
+// The list can be this Mac's own, or another Mac's (Todos → Use Another Mac's
+// List…). Using another Mac's list, the server passes everything on to that Mac
+// (see src/host.js), and the menu bar item, the badge and the notifications are
+// worked out from a copy of that list, refreshed as it changes.
 
 import {
   app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, powerMonitor, screen, session, shell,
@@ -26,7 +31,10 @@ import * as tailscale from '../src/tailscale.js';
 import { showPairing } from './pairing.js';
 import { createHandoff } from './handoff.js';
 import { bundledCli, cliLink, install as linkCli, linkState, onShellPath, uninstall as unlinkCli } from './cli-install.js';
-import { tildify } from '../src/claude-session.js';
+import { recordHere, tildify } from '../src/claude-session.js';
+import { HostError, createHost, hostAddress, hostName, recordOnHost } from '../src/host.js';
+import { copyTasks, copyable } from '../src/host-copy.js';
+import { connectWindowState, showConnect } from './connect.js';
 
 // TODOS_USER_DATA keeps a second copy (one run from source, or by the tests) apart
 // from the installed app: its own settings, and its own "already running" lock,
@@ -52,6 +60,7 @@ let dashboardUrl = null;
 let dashboard = null; // the running server: { url, port, socket, socketProblem, close() }
 let quitting = false;
 let remote = null; // remote-access state, shared with the server (created once the app is ready)
+let hostConn = null; // while this Mac uses another Mac's list: the connection to it (see src/host.js)
 let onDefaultPort = true; // false if another program had our port and we fell back to a random one
 
 // ---------- server ----------
@@ -61,7 +70,7 @@ let onDefaultPort = true; // false if another program had our port and we fell b
 // The local socket (see src/socket.js) is opened either way, so the `todos`
 // command reaches the app even when the port had to change.
 async function startDashboard() {
-  const options = { handoff, remote, socketPath: socketPath() };
+  const options = { handoff, remote, socketPath: socketPath(), host: hostConn };
   try {
     return await startServer({ port: PORT, ...options });
   } catch (e) {
@@ -177,6 +186,9 @@ const settings = {
   handoffTarget: 'desktop', // where "Start with Claude" opens sessions: 'desktop' or 'terminal'
   remoteAccess: false, // "Allow Access from My Other Devices"
   remoteOwnerOnly: true, // relayed requests must come from this Mac's own Tailscale account
+  host: null, // { url, name } while this Mac uses another Mac's list; its token is in host-access-token
+  hostOffered: [], // the Macs this one has already offered to copy its own tasks to, by address
+  hostReminded: [], // reminders on another Mac's list already shown here, as "id@time", so none is shown twice
 };
 
 function loadSettings() {
@@ -203,6 +215,7 @@ const handoff = createHandoff({
   settings,
   saveSettings,
   workDir: () => path.join(app.getPath('userData'), 'handoff'),
+  record: (todo, change) => (hostConn ? recordOnHost(hostConn)(todo, change) : recordHere(todo, change)),
   async pickFolder(todo, startAt) {
     showWindow();
     const picked = await dialog.showOpenDialog(win, {
@@ -371,6 +384,10 @@ async function rotateToken() {
 }
 
 function remoteMenu() {
+  if (hostConn) {
+    // Other devices go to the Mac whose list this is, not through this one.
+    return { label: 'Remote Access', submenu: [{ label: `Off while this Mac uses the list on ${hostConn.name}`, enabled: false }] };
+  }
   const on = settings.remoteAccess;
   const { tailscale: ts, mapped, url } = remoteInfo;
   return {
@@ -479,6 +496,201 @@ function commandLineMenu() {
     items.push({ id: 'cli-trouble', label: 'Why the todos Command Can’t Connect…', click: () => tell('The todos command can’t reach this copy of Todos', socketTrouble()) });
   }
   return items;
+}
+
+// ---------- another Mac's list ----------
+
+// The other Mac's access token, kept like this Mac's own: in a file only you can read.
+const hostTokenFile = () => path.join(app.getPath('userData'), 'host-access-token');
+
+function readHostToken() {
+  try {
+    return fs.readFileSync(hostTokenFile(), 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeHostToken(token) {
+  fs.writeFileSync(hostTokenFile(), `${token}\n`, { mode: 0o600 });
+  fs.chmodSync(hostTokenFile(), 0o600); // writeFileSync's mode only applies when it creates the file
+}
+
+// What the menu bar item, the badge and the notifications are worked out from while
+// using another Mac's list: that list as last fetched. `reached` says whether the
+// last try worked.
+const emptyCopy = () => ({ todos: [], habits: { habits: [], zone: Intl.DateTimeFormat().resolvedOptions().timeZone }, fetched: false, reached: false });
+let hostCopy = emptyCopy();
+let unfollow = null;
+
+async function refreshFromHost() {
+  const conn = hostConn;
+  if (!conn) return;
+  try {
+    const [list, habits] = await Promise.all([conn.request('GET', '/api/todos'), conn.request('GET', '/api/v1/habits')]);
+    if (conn !== hostConn) return; // switched lists meanwhile
+    if (list.status === 200) hostCopy.todos = list.body.todos;
+    if (habits.status === 200) hostCopy.habits = { habits: habits.body.habits, zone: habits.body.zone };
+    hostCopy.reached = list.status === 200;
+    hostCopy.fetched ||= hostCopy.reached;
+  } catch {
+    if (conn === hostConn) hostCopy.reached = false;
+  }
+  refreshIndicators();
+}
+
+// Fetches the list again whenever the other Mac says it changed.
+function followHost() {
+  unfollow?.();
+  unfollow = null;
+  if (!hostConn) return;
+  let soon = null;
+  unfollow = hostConn.follow(() => {
+    clearTimeout(soon);
+    soon = setTimeout(refreshFromHost, 150);
+  });
+}
+
+// The list as it is now: this Mac's own, or the copy of the other Mac's.
+function currentTodos() {
+  if (hostConn) return hostCopy.todos;
+  return load().todos;
+}
+
+let warnedAboutToken = false;
+function onHostState(state) {
+  buildMenu();
+  refreshIndicators();
+  if (state === 'unauthorized' && !warnedAboutToken) {
+    warnedAboutToken = true;
+    notify({ title: `${hostConn.name} no longer accepts this Mac`, body: `Its access token has changed. Choose Todos → Reconnect to ${hostConn.name}… to enter the new one.`, onClick: () => openConnect(settings.host?.url) });
+  }
+  if (state === 'ok') warnedAboutToken = false;
+}
+
+// Uses the list behind `next` ({ url, token, conn }), or this Mac's own (null).
+async function switchList(next) {
+  unfollow?.();
+  unfollow = null;
+  const before = hostConn;
+  if (next) {
+    writeHostToken(next.token);
+    settings.host = { url: next.url.origin, name: hostName(next.url) };
+    hostConn = next.conn;
+    hostConn.onState(onHostState);
+  } else {
+    fs.rmSync(hostTokenFile(), { force: true });
+    settings.host = null;
+    hostConn = null;
+  }
+  saveSettings();
+  before?.close(); // ends what was passed on to it, so the window and the todos command reconnect
+  remote.setEnabled(settings.remoteAccess && !hostConn);
+  dashboard.setHost(hostConn);
+  seen = null; // Claude's updates: start again from what the new list holds
+  hostCopy = emptyCopy();
+  warnedAboutToken = false;
+  if (hostConn) {
+    await refreshFromHost();
+    // Reminders that came due on that list before now were for wherever it lived.
+    settings.hostReminded = hostCopy.todos.filter((t) => t.remindAt && Date.parse(t.remindAt) <= Date.now()).map((t) => `${t.id}@${t.remindAt}`).slice(-200);
+    saveSettings();
+    followHost();
+  } else {
+    refreshIndicators();
+  }
+  buildMenu();
+  if (win && !win.isDestroyed()) win.reload();
+  if (captureWin && !captureWin.isDestroyed()) captureWin.reload();
+  if (settings.remoteAccess && !hostConn) refreshRemote();
+  debug(`list: ${hostConn ? `on ${hostConn.name}` : 'this Mac’s own'}`);
+}
+
+// Tries an address and a token, from the window or the tests. Resolves to { error }
+// to show, or to nothing once this Mac uses that list.
+async function connectTo(address, token) {
+  let url;
+  try {
+    url = hostAddress(address);
+  } catch (e) {
+    return { error: e.message };
+  }
+  const key = String(token || '').trim();
+  if (!key) return { error: 'Paste the access token from the other Mac.' };
+  if (remote.enabled && key === remote.token) return { error: 'That is this Mac’s own access token. Use the other Mac’s.' };
+  const conn = createHost({ url, token: key });
+  try {
+    await conn.check();
+  } catch (e) {
+    conn.close();
+    return { error: e instanceof HostError ? e.message : `Couldn’t connect: ${e.message}` };
+  }
+  await switchList({ url, token: key, conn });
+  offerToCopy(); // after the window has closed
+  return null;
+}
+
+function openConnect(address) {
+  showConnect({ url: dashboardUrl, address, root: ROOT, dark: nativeTheme.shouldUseDarkColors, parent: win, onConnect: connectTo });
+}
+
+// The first time this Mac uses another Mac's list, it offers to copy its own open
+// tasks there. Its own list keeps them either way.
+async function offerToCopy() {
+  if (!hostConn || settings.hostOffered.includes(settings.host.url)) return;
+  settings.hostOffered = [...settings.hostOffered, settings.host.url];
+  saveSettings();
+  let mine;
+  try {
+    mine = copyable(load().todos);
+  } catch {
+    return;
+  }
+  if (!mine.length) return;
+  const { name } = hostConn;
+  const tasks = mine.length === 1 ? '1 open task' : `${mine.length} open tasks`;
+  const { response } = await box({
+    type: 'question',
+    buttons: [mine.length === 1 ? 'Copy It' : `Copy ${mine.length} Tasks`, 'Don’t Copy'],
+    defaultId: 0,
+    cancelId: 1,
+    message: `Copy this Mac’s ${tasks} to ${name}?`,
+    detail: `They are added to the list on ${name} as new tasks, with their notes, checklists, dates, tags and projects. Their comments and history stay here, and so does this Mac’s own list, which comes back if you switch to it again. You are only asked once.`,
+  });
+  if (response !== 0) return;
+  const { copied, failed } = await copyTasks(hostConn, mine);
+  debug(`copied: ${copied}, failed: ${failed.length}`);
+  await refreshFromHost();
+  if (failed.length) {
+    await tell(`Copied ${copied} of ${mine.length} tasks to ${name}`, `These weren’t copied:\n\n${failed.map((f) => `• ${f.title}: ${f.reason}`).join('\n')}`);
+  } else {
+    await tell(`Copied ${copied === 1 ? '1 task' : `${copied} tasks`} to ${name}`, 'They are in its list now. This Mac’s own list still has them too.');
+  }
+}
+
+async function useOwnList() {
+  const name = hostConn?.name;
+  const { response } = await box({
+    type: 'question',
+    buttons: ['Use This Mac’s List', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    message: 'Use this Mac’s own list again?',
+    detail: `This Mac stops using the list on ${name} and shows its own again. Nothing on ${name} changes. To use its list again later, you’ll need its access token.`,
+  });
+  if (response === 0) await switchList(null);
+}
+
+function listMenu() {
+  if (!hostConn) return [{ id: 'use-host', label: 'Use Another Mac’s List…', click: () => openConnect() }];
+  const { name, state } = hostConn;
+  const status = { unreachable: `Can’t Reach ${name} Right Now`, unauthorized: `${name} Needs Its New Access Token` }[state];
+  return [
+    { id: 'host-status', label: `Using the List on ${name}`, enabled: false },
+    ...(status ? [{ label: status, enabled: false }] : []),
+    { id: 'reconnect-host', label: `Reconnect to ${name}…`, click: () => openConnect(settings.host.url) },
+    { id: 'use-own-list', label: 'Use This Mac’s Own List', click: useOwnList },
+  ];
 }
 
 // ---------- quick capture ----------
@@ -603,8 +815,13 @@ function trayHabitItems({ habits, zone }) {
   const { due, done } = habitText.forToday(habits);
   const risky = habitText.atRiskHabits(habits);
   if (!due.length && !done.length && !risky.length) return [];
-  const log = (habit, input) => () => {
+  const log = (habit, input) => async () => {
     try {
+      if (hostConn) {
+        const done = await hostConn.request('POST', `/api/v1/habits/${habit.id}/checkins`, { body: { slot: input.slot, day: input.day } });
+        if (done.status >= 300) throw new Error(done.body?.error?.message || `${hostConn.name} answered ${done.status}`);
+        return refreshFromHost();
+      }
       checkIn(habit.id, input, 'me');
     } catch (e) {
       console.error(`Could not check in ${habit.name}: ${e.message}`);
@@ -650,9 +867,14 @@ function updateTray(todos, habits) {
   const s = summarize(todos);
   const attention = s.overdue + s.due_today;
   tray.setTitle(attention ? ` ${attention}` : '');
+  // Whose list this is, while it isn't this Mac's own.
+  const where = hostConn
+    ? [{ label: { unreachable: `Can’t reach ${hostConn.name}`, unauthorized: `${hostConn.name} needs its new access token` }[hostConn.state] || `List on ${hostConn.name}`, enabled: false }, { type: 'separator' }]
+    : [];
   const template = [
     { label: 'New Task…', accelerator: shortcutRegistered ? settings.captureShortcut : undefined, registerAccelerator: false, click: showCapture },
     { type: 'separator' },
+    ...where,
     ...trayTaskItems(todos),
     ...trayHabitItems(habits),
     { label: 'Open Todos', click: showWindow },
@@ -665,6 +887,7 @@ function updateTray(todos, habits) {
 
 // Habits as they stand now, or none if their file can't be read at the moment.
 function habitsNow() {
+  if (hostConn) return hostCopy.habits;
   try {
     return listHabits();
   } catch {
@@ -677,7 +900,7 @@ function habitsNow() {
 function refreshIndicators() {
   let todos;
   try {
-    todos = load().todos;
+    todos = currentTodos();
   } catch {
     return; // data file mid-edit or unreadable; the next change will retry
   }
@@ -734,6 +957,7 @@ function checkHabitReminders() {
 // closed), and once a day from 9:00 a summary of what's due today or overdue,
 // which habits today asks for, and any streak that hangs on finishing yesterday.
 function checkReminders() {
+  if (hostConn) return checkHostReminders();
   let todos;
   try {
     todos = load().todos;
@@ -744,8 +968,33 @@ function checkReminders() {
   checkHabitReminders();
 
   const due = pendingReminders(todos);
+  if (due.length) markReminded(due.map((t) => t.id)); // first, so a crash can't deliver the same reminder twice
+  announceReminders(due, t0);
+  checkDailySummary(todos, t0);
+}
+
+// On another Mac's list a reminder is that Mac's to mark as delivered. This Mac
+// shows each one once, and only within a few hours of its time: one long past was
+// shown wherever the list was in use then.
+const HOST_REMINDER_HOURS = 12;
+function checkHostReminders() {
+  if (!hostCopy.fetched) return;
+  const now = Date.now();
+  const t0 = today();
+  checkHabitReminders();
+  const shownHere = new Set(settings.hostReminded);
+  const due = hostCopy.todos.filter((t) => t.status !== 'done' && t.remindAt && Date.parse(t.remindAt) <= now
+    && now - Date.parse(t.remindAt) < HOST_REMINDER_HOURS * 3600_000 && !shownHere.has(`${t.id}@${t.remindAt}`));
   if (due.length) {
-    markReminded(due.map((t) => t.id)); // first, so a crash can't deliver the same reminder twice
+    settings.hostReminded = [...settings.hostReminded, ...due.map((t) => `${t.id}@${t.remindAt}`)].slice(-200); // first, so none is shown twice
+    saveSettings();
+  }
+  announceReminders(due, t0);
+  checkDailySummary(hostCopy.todos, t0);
+}
+
+function announceReminders(due, t0) {
+  if (due.length) {
     // With "Reminder Notifications on This Mac" off, the reminder is still marked as
     // delivered and still shows in the window, but nothing pops up or bounces here.
     const announce = settings.reminderNotifications;
@@ -760,7 +1009,9 @@ function checkReminders() {
     }
     if (announce) app.dock?.bounce('informational');
   }
+}
 
+function checkDailySummary(todos, t0) {
   if (settings.dailySummary && settings.lastSummaryDate !== t0 && new Date().getHours() >= SUMMARY_HOUR) {
     settings.lastSummaryDate = t0;
     saveSettings();
@@ -898,6 +1149,7 @@ function buildMenu() {
           ],
         },
         remoteMenu(),
+        ...listMenu(),
         ...commandLineMenu(),
         { type: 'separator' },
         { role: 'services' },
@@ -917,7 +1169,7 @@ function buildMenu() {
         { label: 'Quick Capture', accelerator: shortcutRegistered ? settings.captureShortcut : undefined, registerAccelerator: false, click: showCapture },
         { type: 'separator' },
         { label: 'Open in Browser', accelerator: 'CmdOrCtrl+Shift+O', click: () => shell.openExternal(dashboardUrl) },
-        { label: 'Show Data File in Finder', click: () => shell.showItemInFolder(DATA_FILE) },
+        { label: 'Show Data File in Finder', enabled: !hostConn, click: () => shell.showItemInFolder(DATA_FILE) },
         { label: 'Copy Claude Code Setup Command', click: () => clipboard.writeText(mcpCommand()) },
         { type: 'separator' },
         { role: 'close' },
@@ -962,9 +1214,21 @@ if (process.env.TODOS_DEBUG) {
       (Menu.getApplicationMenu()?.getMenuItemById(id) ?? trayMenu?.getMenuItemById(id))?.click();
       console.log(`clicked: ${id}`);
     }
+    // An address and a token in <settings folder>/debug-connect are tried as if typed
+    // into the "Use Another Mac's List" window.
+    const connecting = path.join(app.getPath('userData'), 'debug-connect');
+    if (fs.existsSync(connecting)) {
+      const { address, token } = JSON.parse(fs.readFileSync(connecting, 'utf8'));
+      fs.rmSync(connecting);
+      connectTo(address, token).then((answer) => console.log(`connect: ${answer?.error ? `error ${answer.error}` : 'ok'}`));
+    }
     console.log(`state: ${JSON.stringify({
       active: app.isActive(), window: windowState(win), capture: windowState(captureWin), tray: !!tray, socket: dashboard?.socket || null,
       menu: { install: enabled('install-cli'), uninstall: enabled('uninstall-cli') },
+      listMenu: { useHost: enabled('use-host'), useOwn: enabled('use-own-list') },
+      host: hostConn ? { name: hostConn.name, state: hostConn.state, todos: hostCopy.todos.length, reached: hostCopy.reached } : null,
+      connect: connectWindowState(),
+      trayLabels: trayMenu ? trayMenu.items.map((i) => i.label).filter(Boolean) : [],
     })}`);
   });
 }
@@ -1023,9 +1287,23 @@ app.on('window-all-closed', () => {
 
 app.whenReady().then(async () => {
   loadSettings();
+  // Still using another Mac's list from last time? Without its token, back to this Mac's own.
+  const token = settings.host ? readHostToken() : null;
+  try {
+    if (token) {
+      hostConn = createHost({ url: hostAddress(settings.host.url), token });
+      hostConn.onState(onHostState);
+    }
+  } catch {
+    hostConn = null;
+  }
+  if (settings.host && !hostConn) {
+    settings.host = null;
+    saveSettings();
+  }
   remote = createRemote({
     tokenFile: path.join(app.getPath('userData'), 'remote-access-token'),
-    enabled: settings.remoteAccess,
+    enabled: settings.remoteAccess && !hostConn,
     requireOwner: settings.remoteOwnerOnly,
   });
   remote.deviceName = tailscale.deviceName;
@@ -1038,18 +1316,26 @@ app.whenReady().then(async () => {
     return;
   }
   await giveWindowsTheirCookie(); // before any window loads; harmless while remote access is off
-  if (settings.remoteAccess) refreshRemote(); // not awaited: Tailscale may be slow, and the windows don't depend on it
-  setInterval(() => settings.remoteAccess && refreshRemote(), 60_000);
+  if (settings.remoteAccess && !hostConn) refreshRemote(); // not awaited: Tailscale may be slow, and the windows don't depend on it
+  setInterval(() => settings.remoteAccess && !hostConn && refreshRemote(), 60_000);
   if (socketTrouble()) console.error(`No local socket for the todos command: ${socketTrouble()}`);
   debug(`started: pid=${process.pid} background=${startedInBackground} port=${dashboard.port} socket=${dashboard.socket || 'none'}`);
   registerShortcut();
   buildMenu();
   if (!startedInBackground) createWindow(); // otherwise the window waits until the app is opened in the usual way
   createCaptureWindow();
-  refreshIndicators();
-  watchStore(refreshIndicators);
-  watchHabits(refreshIndicators);
-  setInterval(refreshIndicators, 60_000); // "due today" rolls over at midnight
+  // This Mac's own files only count while its own list is in use.
+  const ownChanged = () => !hostConn && refreshIndicators();
+  watchStore(ownChanged);
+  watchHabits(ownChanged);
+  if (hostConn) {
+    refreshFromHost();
+    followHost();
+  } else {
+    refreshIndicators();
+  }
+  // "Due today" rolls over at midnight; another Mac's list is fetched again too, in case a change went unannounced.
+  setInterval(() => (hostConn ? refreshFromHost() : refreshIndicators()), 60_000);
   if (process.argv.includes('--capture')) showCapture();
 
   setTimeout(checkReminders, 3_000);

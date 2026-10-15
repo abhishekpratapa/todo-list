@@ -116,8 +116,10 @@ const cleanLabel = (v) => String(v || '').replace(/[^\w .,()'’-]/g, '').trim()
 // it is disabled, there is no sign-in and nothing new is served.
 //
 // `host` is the other Mac whose list this one uses, from createHost(), or null for
-// this Mac's own. The desktop app keeps remote access off meanwhile.
-export function startServer({ port = PORT, handoff = null, remote = null, socketPath = null, host = null } = {}) {
+// this Mac's own. setHost() on the result switches between them while it runs. The
+// desktop app keeps remote access off meanwhile.
+export function startServer({ port = PORT, handoff = null, remote = null, socketPath = null, host: startingHost = null } = {}) {
+  let host = startingHost;
   let localHosts = new Set();
   let lastVersion = load().version;
   const streams = new Map(); // open live-update responses -> kind of session that opened them
@@ -304,12 +306,13 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
 
   // Starting Claude sessions: the folders and the launching are this Mac's, the
   // record of it goes to the host.
-  const hostSessions = host && (handoff?.session && handoff?.started ? handoff : createSessions({ record: recordOnHost(host) }));
+  const hostSessions = () => (handoff?.session && handoff?.started ? handoff : createSessions({ record: recordOnHost(host) }));
 
   // A task as the host has it, for starting a Claude session on it here.
   async function hostTask(id) {
     const answer = await host.request('GET', `/api/v1/tasks/${id}`);
     if (answer.status === 200) return answer.body.task;
+    if (answer.status === 401) throw host.tokenRefused();
     const message = answer.body?.error?.message || `${host.name} answered ${answer.status}.`;
     if (answer.status === 404) throw new NotFoundError(message);
     throw new RequestError(answer.status, answer.body?.error?.code || 'host_refused', message);
@@ -325,6 +328,7 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
 
     if (p === '/api/todos' && req.method === 'GET') {
       const answer = await host.request('GET', '/api/todos');
+      if (answer.status === 401) throw host.tokenRefused();
       if (answer.status !== 200) return json(res, answer.status, answer.body) ?? true;
       const { session, ...list } = answer.body;
       return json(res, 200, { ...list, handoff: handoff ? handoff.info() : null, host: host.name }) ?? true;
@@ -352,11 +356,11 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
     if (p === '/session') return req.method === 'GET' ? json(res, 200, { kind: 'local' }) : refuseHere(404, 'not_found', 'No such endpoint.');
     const cs = p.match(/^\/tasks\/(\d+)\/claude-session$/);
     if (cs) {
-      if (req.method === 'GET') return json(res, 200, hostSessions.session(await hostTask(cs[1])));
+      if (req.method === 'GET') return json(res, 200, hostSessions().session(await hostTask(cs[1])));
       if (req.method === 'POST') {
         const body = req.headers['content-length'] > 0 ? only(await readJson(req, ctx.bodyLimit), ['folder']) : {};
         const folder = startedIn(body.folder);
-        const { todo } = await hostSessions.started(await hostTask(cs[1]), { folder, key: idempotencyKey(req), as });
+        const { todo } = await hostSessions().started(await hostTask(cs[1]), { folder, key: idempotencyKey(req), as });
         res.setHeader('ETag', `"${todo.rev}"`);
         return json(res, 200, { task: todo });
       }
@@ -503,7 +507,7 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
       }
       if (e instanceof HostError) {
         // The host could not be reached, or turned the request down.
-        const code = e.code === 'unreachable' ? 'host_unreachable' : 'host_refused';
+        const code = { unreachable: 'host_unreachable', token_refused: 'host_token_refused' }[e.code] || 'host_refused';
         return json(res, 502, ctx.local || url.pathname.startsWith('/api/v1/') ? { error: { code, message: e.message } } : { error: e.message, code });
       }
       if (ctx.local || url.pathname.startsWith('/api/v1/')) return v1.fail(res, e);
@@ -563,7 +567,14 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
       applyLimits();
       // The socket comes second, so a copy that could not get its port never touches it.
       const socketProblem = local ? await listenOnSocket(local, socketPath).then(() => null, (e) => e) : null;
-      resolve({ url: `http://127.0.0.1:${actual}`, port: actual, socket: local && !socketProblem ? socketPath : null, socketProblem, close });
+      // Switching between this Mac's list and another Mac's: live connections are
+      // ended, and the pages and commands that held them reconnect to the new list.
+      const setHost = (next) => {
+        host = next;
+        for (const res of streams.keys()) res.end();
+        streams.clear();
+      };
+      resolve({ url: `http://127.0.0.1:${actual}`, port: actual, socket: local && !socketProblem ? socketPath : null, socketProblem, close, setHost });
     });
   });
 }

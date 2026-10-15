@@ -13,7 +13,8 @@ import os from 'node:os';
 export const MIN_HOST_REVISION = 6;
 
 // Why a host can't be used, or turned a change down. `code` is one of: bad_address,
-// unreachable, not_todos, remote_off, not_allowed, unauthorized, too_old, refused.
+// unreachable, not_todos, remote_off, not_allowed, unauthorized, too_old, refused,
+// token_refused (the host's token changed since this Mac connected).
 export class HostError extends Error {
   constructor(code, message) {
     super(message);
@@ -65,6 +66,7 @@ export function createHost({ url, token, label = thisMac() }) {
   let state = 'unknown'; // 'ok', 'unreachable' or 'unauthorized': how the last answer went
 
   const unreachable = () => new HostError('unreachable', `Can't reach Todos on ${name}. Check that the Mac is awake, on Tailscale, and running Todos.`);
+  const tokenRefused = () => new HostError('token_refused', `Todos on ${name} no longer accepts this Mac's access token. On this Mac, choose Todos → Reconnect to ${name}… and enter its new one.`);
 
   function settle(next) {
     if (next === state) return;
@@ -96,6 +98,8 @@ export function createHost({ url, token, label = thisMac() }) {
     get state() {
       return state;
     },
+    // The error for a token the host no longer accepts.
+    tokenRefused,
     // Called with the new state whenever it changes.
     onState(fn) {
       listeners.add(fn);
@@ -144,6 +148,13 @@ export function createHost({ url, token, label = thisMac() }) {
       let finished = false;
       upstream.on('response', (answer) => {
         noted(answer);
+        // Not passed on as 401: the page would go looking for a sign-in page, and the
+        // todos command would ask to be paired. Reconnecting is done here, in the app.
+        if (answer.statusCode === 401) {
+          answer.resume();
+          finished = true;
+          return refuse(502, 'host_token_refused', tokenRefused().message);
+        }
         const headers = {};
         for (const h of RESPONSE_HEADERS) if (answer.headers[h] !== undefined) headers[h] = answer.headers[h];
         if (live) headers.connection = 'keep-alive';
@@ -186,6 +197,59 @@ export function createHost({ url, token, label = thisMac() }) {
         throw new HostError('too_old', `Todos on ${name} is version ${info.body.appVersion}, too old to share its list with this Mac. Update it to the same version as this one.`);
       }
       return info.body;
+    },
+
+    // Follows the host's live updates, calling onEvent(name) for each ("hello" on
+    // every connection, then "change" or "habits"). Reconnects by itself while the
+    // host can't be reached. Returns a function that stops it.
+    follow(onEvent) {
+      let stopped = false;
+      let current = null;
+      let wait = 2000;
+      let retry = null;
+      const again = () => {
+        current = null;
+        if (stopped) return;
+        retry = setTimeout(connect, wait);
+        wait = Math.min(wait * 2, 60_000);
+      };
+      function connect() {
+        if (stopped) return;
+        // However this connection ends (closed, dropped, timed out, refused), try again once.
+        let over = false;
+        const done = () => {
+          if (over) return;
+          over = true;
+          again();
+        };
+        current = open('GET', '/api/v1/events', { headers: { accept: 'text/event-stream' }, timeout: 60_000 });
+        current.on('response', (res) => {
+          noted(res);
+          res.on('close', done);
+          if (res.statusCode !== 200) return res.resume();
+          wait = 2000;
+          let buffer = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk) => {
+            buffer += chunk;
+            for (let i; (i = buffer.indexOf('\n\n')) >= 0; buffer = buffer.slice(i + 2)) {
+              const event = buffer.slice(0, i).match(/^event: (.+)$/m);
+              if (event) onEvent(event[1]);
+            }
+          });
+          res.on('error', () => {}); // a dropped stream: 'close' follows
+        });
+        current.on('error', (e) => {
+          if (UNREACHABLE.has(e.code) || /certificate|SSL|TLS/i.test(e.message)) settle('unreachable');
+          done();
+        });
+      }
+      connect();
+      return () => {
+        stopped = true;
+        clearTimeout(retry);
+        current?.destroy();
+      };
     },
 
     close() {
