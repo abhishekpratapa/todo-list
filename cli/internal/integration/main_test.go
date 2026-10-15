@@ -72,6 +72,7 @@ func baseEnv(t *testing.T) []string {
 		"TODOS_SSH=false",
 		"TODO_PORT=9", // nothing listens there
 		"TZ=UTC",
+		"TODOS_QUEUE=manual", // no sender left running in the background, unless a test asks
 	}
 }
 

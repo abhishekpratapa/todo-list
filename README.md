@@ -178,6 +178,8 @@ Started this way, the server, the menu bar item, reminders and notifications all
 
 On a machine that only has the command, it reaches the Mac the way your phone does: remote access on, the address from **Remote Access → Copy Address**, and the access token from **Copy Access Token**. Everything works except starting a Claude session, which only exists on the Mac.
 
+While the Mac can't be reached, `todos add` (and `done`, `comment` and `sub add` on a task given by its number) are saved on that machine and sent once it can be, as the iPhone does: see [Working offline](cli/README.md#working-offline).
+
 The command may also start the app on the Mac over SSH (`ssh your-mac open -g -a Todos --args --background`). macOS only lets that work **while you are logged in to the Mac's desktop**: a Mac sitting at the login window, or one you have logged out of, has nowhere to open an app, and `open` fails. For a Mac you want reachable after a restart, log in automatically and turn on **Todos → Launch at Login**.
 
 ### Is the app there?

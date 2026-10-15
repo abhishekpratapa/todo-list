@@ -470,10 +470,65 @@ func (c *Client) change(ctx context.Context, r request) (*TaskResult, error) {
 	return &out, nil
 }
 
+// Change is a change to a task, worked out before it is sent, with the key
+// that makes sending it again harmless. One that can't be sent now can be kept
+// and sent later, and the app applies it once however often it arrives.
+type Change struct {
+	Method string
+	Path   string
+	Body   map[string]any
+	Key    string
+}
+
+// Send makes a change.
+func (c *Client) Send(ctx context.Context, ch Change) (*TaskResult, error) {
+	r := request{method: ch.Method, path: ch.Path, key: ch.Key}
+	if ch.Body != nil {
+		r.body = ch.Body
+	}
+	var out TaskResult
+	if err := c.do(ctx, r, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// NewKey is a fresh Idempotency-Key.
+func NewKey() string { return newKey() }
+
+// CaptureChange adds a task from one line. With at set, the line is read as of
+// then: "tomorrow" is the day after it was typed, not after it arrived.
+func CaptureChange(line string, at time.Time, key string) Change {
+	body := map[string]any{"text": line}
+	if !at.IsZero() {
+		body["at"] = at.UTC().Format("2006-01-02T15:04:05.000Z")
+	}
+	return Change{Method: "POST", Path: v1 + "/capture", Body: body, Key: key}
+}
+
+// CompleteChange marks a task done, with a closing comment if there is one.
+func CompleteChange(id int, comment, key string) Change {
+	ch := Change{Method: "POST", Path: taskPath(id, "/complete"), Key: key}
+	if comment != "" {
+		ch.Body = map[string]any{"comment": comment}
+	}
+	return ch
+}
+
+// CommentChange adds a comment to a task.
+func CommentChange(id int, text, key string) Change {
+	return Change{Method: "POST", Path: taskPath(id, "/comments"), Body: map[string]any{"text": text}, Key: key}
+}
+
+// SubtasksChange adds subtasks to a task.
+func SubtasksChange(id int, titles []string, key string) Change {
+	return Change{Method: "POST", Path: taskPath(id, "/subtasks"), Body: map[string]any{"titles": titles}, Key: key}
+}
+
 // Capture adds a task from one line, read by the server exactly as the app's
 // own capture box reads it.
 func (c *Client) Capture(ctx context.Context, line string) (*TaskResult, error) {
-	return c.change(ctx, request{method: "POST", path: v1 + "/capture", body: map[string]any{"text": line}})
+	return c.Send(ctx, CaptureChange(line, time.Time{}, newKey()))
 }
 
 // Preview shows how a line would be read, without adding anything.
@@ -532,19 +587,15 @@ func (c *Client) Delete(ctx context.Context, id int, rev int) error {
 }
 
 func (c *Client) Complete(ctx context.Context, id int, comment string) (*TaskResult, error) {
-	r := request{method: "POST", path: taskPath(id, "/complete")}
-	if comment != "" {
-		r.body = map[string]any{"comment": comment}
-	}
-	return c.change(ctx, r)
+	return c.Send(ctx, CompleteChange(id, comment, newKey()))
 }
 
 func (c *Client) Comment(ctx context.Context, id int, text string) (*TaskResult, error) {
-	return c.change(ctx, request{method: "POST", path: taskPath(id, "/comments"), body: map[string]any{"text": text}})
+	return c.Send(ctx, CommentChange(id, text, newKey()))
 }
 
 func (c *Client) AddSubtasks(ctx context.Context, id int, titles []string) (*TaskResult, error) {
-	return c.change(ctx, request{method: "POST", path: taskPath(id, "/subtasks"), body: map[string]any{"titles": titles}})
+	return c.Send(ctx, SubtasksChange(id, titles, newKey()))
 }
 
 func (c *Client) PatchSubtask(ctx context.Context, id, sub int, fields map[string]any) (*TaskResult, error) {

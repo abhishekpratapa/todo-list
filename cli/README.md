@@ -5,7 +5,7 @@
 It never reads or writes the list's file. Everything goes through the running app, so there is one copy of the list, one parser for dates and one-line entries, and one set of rules about conflicts.
 
 - **On the Mac** it talks to the app through a local socket. No token, nothing to set up. If the app isn't running, the command starts it in the background.
-- **On other machines** on your tailnet (a Linux box you SSH into, say) you pair it with the Mac once, and it reaches the app over HTTPS through Tailscale.
+- **On other machines** on your tailnet (a Linux box you SSH into, say) you pair it with the Mac once, and it reaches the app over HTTPS through Tailscale. Tasks added while the Mac can't be reached are saved and sent when it can be ([Working offline](#working-offline)).
 
 ## Installing
 
@@ -116,6 +116,45 @@ Without an SSH host, the command says the app isn't running and how to add one.
 
 `todos status` shows the profile in use and the versions on both sides, or the error above that applies.
 
+## Working offline
+
+On a paired profile, when the Mac can't be reached (asleep, offline, off the tailnet, or Todos not running there), changes that only add something are saved on this machine and sent when it can be:
+
+| Command | Saved |
+|---|---|
+| `todos add "<line>"`, `todos add -` | The line, read as of when you typed it: "tomorrow" is the day after you typed it, not the day after it arrives. |
+| `todos done <number>` | With its `-m` comment. |
+| `todos comment <number> <text>` | |
+| `todos sub add <number> <title>…` | |
+
+The task has to be given by its number, because its title can't be looked up without the Mac. Everything else needs the Mac and fails as before (exit 5): listing, `edit`, `start`, `block`, `reopen`, `rm`, the habit commands, the board. Those would change a task as it is now, which only the Mac knows.
+
+```bash
+todos add "Call the bank tomorrow"
+```
+
+On a terminal that prints `◷ Saved for later  add “Call the bank tomorrow”`. In a script, standard output is empty (there is no task yet, so no id), standard error says what was saved, and the exit code is 0.
+
+**When they are sent.** First thing in the next command that reaches the Mac, before it does its own work, so what it lists or changes comes after them; on a terminal it says what it sent. If they can't all go (the app says it is getting too many, say), the command says why and goes on with its own work, and the rest follow in the background.
+
+Meanwhile a sender left running in the background tries again after 2 seconds, then at doubling intervals up to a minute, until a day after the newest change was saved. So they go as soon as the Mac is back, even if you run nothing. Only one runs per profile, and it stops once everything has gone. It never starts Todos over SSH; the next command you run does that, as usual.
+
+Each change keeps the idempotency key it was made with, so one that reached the app before the connection dropped is not made twice. A change whose connection dropped partway is saved the same way. If this machine's clock is more than five minutes ahead of the Mac's, the app won't take a time it hasn't reached yet; a line typed so recently is then read as of when it arrives.
+
+**Turned down.** If the app refuses a change (the task was deleted in the meantime, or a line has nothing but markers in it), the change is marked, stays in the queue, and the rest go on. The command that sent it says so on standard error, and on a terminal every command after that reminds you, until you remove it with `todos queue rm`. `todos queue` shows why. (With `--json`, nothing is said: look at `todos queue --json`, or `queue` in `todos status --json`.)
+
+| Command | What it does |
+|---|---|
+| `todos queue` | What is waiting, oldest first, and what was turned down. Needs no connection. |
+| `todos queue send` | Send now. `--wait` keeps trying until the Mac answers (for a day at most). |
+| `todos queue rm <n>…` | Remove changes without sending them. `--all` removes every one. If the queue is being sent at that moment, it waits for that to finish. |
+
+`TODOS_QUEUE=manual` saves changes but leaves no sender in the background: they go with the next command, or `todos queue send`. `TODOS_QUEUE=off` saves nothing, and a command that can't reach the Mac fails (exit 5) as it would without the queue.
+
+The queue is kept in `~/.config/todos/queue/<profile>/`, one file per change, readable only by you. A file there that isn't a change is renamed `*.unreadable` and left alone, and `todos queue` mentions it. Changes are only sent to the address they were saved for: if the profile has since been paired with another Mac, they are turned down rather than sent there.
+
+On the Mac itself there is nothing to wait for: the command starts the app when it isn't running.
+
 ## The board
 
 Run `todos` with no arguments on a terminal:
@@ -206,6 +245,7 @@ A task is named by its number (`12` or `#12`) or by words from its title (`todos
 | `todos habit skip <habit>…` | A rest day: it neither breaks the streak nor adds to it. `-m "why"`, `--yesterday`, and `--undo` to take it back. |
 | `todos claude <task>` | Start a Claude session on the task in this terminal. On the Mac only; see below. |
 | `todos pair`, `todos profiles`, `todos status` | Connecting; see above. |
+| `todos queue` | Changes saved while the Mac couldn't be reached. Also `queue send` and `queue rm`; see [Working offline](#working-offline). |
 | `todos version`, `todos completion <shell>` | |
 
 Every command takes `--profile NAME`, `--json`, `--no-color` and `--no-input`. `todos <command> --help` has the details and examples.
@@ -310,7 +350,9 @@ id=$(todos add "Call the bank tomorrow" | cut -f1)
 todos sub add "$id" "Find the account number"
 ```
 
-`todos rm` prints the id it deleted. `todos watch` puts `created`, `updated` or `deleted` in front of the line.
+`todos rm` prints the id it deleted. `todos watch` puts `created`, `updated` or `deleted` in front of the line. A change saved for later prints nothing on standard output, since there is no task yet.
+
+**`todos queue`** is one line per change: its number, `waiting` or `refused`, when it was made (RFC 3339), the kind (`add`, `done`, `comment` or `subtasks`), the task (`-` if none), the text (`-` if none), and why it was refused (`-` if it wasn't).
 
 **A habit** is one line too: id, where it stands today (`due`, `done`, `off`, `paused` or `archived`), today's count (`1/2`: times of day done out of those it has; for a habit counted in weeks, days this week out of its target), its streak (`12d`, or `3w` in weeks) and its name. `todos habit` prints them in the order of the day, and the commands that change a habit print that habit's line.
 
@@ -335,10 +377,15 @@ todos habit | awk -F'\t' '$2 == "due" { print $5 }'
 | `habit done` | `{"habit": Habit, "checkin": HabitCheckin or null}` (`null` when there was nothing left to check in) |
 | `habit undo`, `habit skip --undo` | `{"habit": Habit}` |
 | `habit skip` | `{"habit": Habit, "skip": HabitCheckin or null}` (`null` when there was nothing to rest) |
-| `status` | `{"profile": "", "transport": "socket\|https", "address": "", "appVersion": "", "apiVersion": {"version": 1, "revision": 4}, "cliVersion": "", "minClientVersions": {}}` |
+| `add` `done` `comment` `sub add`, saved for later | `{"queued": QueuedChange}` |
+| `queue`, `queue ls` | `{"profile": "", "changes": [QueuedChange], "setAside": 0}` (`setAside`: files in the queue's folder that weren't changes) |
+| `queue send` | One object per line: `{"sent": QueuedChange, "task": Task, "next": Task or null}` for a change made, `{"refused": QueuedChange}` for one turned down |
+| `status` | `{"profile": "", "transport": "socket\|https", "address": "", "appVersion": "", "apiVersion": {"version": 1, "revision": 4}, "cliVersion": "", "minClientVersions": {}, "queue": {"waiting": 0, "refused": 0}}` |
 | `profiles` | `{"profiles": [{"name": "", "url": "", "ssh": "", "tokenStore": "", "default": false, "current": false}], "default": ""}` |
 
 A `Task` has `id`, `title`, `notes`, `status` (`todo`, `in_progress`, `blocked`, `done`), `priority` (`high`, `medium`, `low`), `due` (`YYYY-MM-DD` or null), `project`, `tags`, `assignee` (`me`, `claude`), `subtasks` (`[{id, title, done}]`), `repeat`, `remindAt`, `remindedAt`, `rev`, `createdBy`, `createdAt`, `updatedAt`, `completedAt` and `activity` (`[{at, by, kind, text, via}]`). A `TaskSummary` is the same without `activity`, plus `comments` (a count).
+
+A `QueuedChange` is this command's own, not the API's: `id` (its number in the queue), `kind` (`add`, `done`, `comment`, `subtasks`), `task`, `text`, `titles`, `made` (when the command was run), `url` (the Todos it is for), `key` (its idempotency key), and `refused` (`{status, code, message, at}`) once the app has turned it down.
 
 A `Habit` (also in `docs/openapi.json`) has `id`, `name`, `icon`, `color`, `dayStart`, `schedule`, `paused`, `archived`, `rev`, `today` and `yesterday` (for a habit with times of day: `{day, state, done, total, slots: [{id, done, at, by, via, source}]}`; for one counted in weeks: `{day, done}` plus `week: {start, state, count, target, days}`), `streak` (`{current, best, unit, atRisk, previous}`), `rates` and `skipsLeft`.
 
@@ -363,7 +410,7 @@ todos watch --json | jq -r 'select(.event == "created") | .task.title'
 | 2 | Wrong usage: a bad flag or value, a name that matches several tasks, or a question with no terminal to ask it on. |
 | 3 | No such task, subtask or habit. |
 | 4 | Conflict: the task changed, and nothing was overwritten. |
-| 5 | Can't reach Todos: the Mac is asleep or offline, Tailscale is down, Remote Access is off, or the app isn't running on the other Mac. |
+| 5 | Can't reach Todos: the Mac is asleep or offline, Tailscale is down, Remote Access is off, or the app isn't running on the other Mac. (A change that can wait is saved instead, with exit 0: see [Working offline](#working-offline).) |
 | 6 | The access token was rejected (or there is none). |
 | 7 | Todos is not running and could not be started. |
 | 8 | Version mismatch: the command or the app is too old for the other, or the app is too old for habits (everything else then still works). |
@@ -392,6 +439,7 @@ fi
 | `VISUAL`, `EDITOR` | The editor for notes. |
 | `TODOS_CA_FILE` | Extra certificate authorities to trust (PEM), for a hub that isn't behind Tailscale's certificates. |
 | `TODOS_THEME` | `light` or `dark`, instead of asking the terminal. |
+| `TODOS_QUEUE` | `manual`: save changes made while the Mac can't be reached, with no sender in the background. `off`: save nothing, and fail. |
 | `NO_COLOR` | No color. |
 | `XDG_CONFIG_HOME` | Where the config folder is (default `~/.config`). |
 
@@ -403,7 +451,7 @@ cd cli && go test ./...
 
 The tests never touch the installed app, its port (7420), its socket or its data.
 
-- **Unit tests** cover the connection layer over a socket and over HTTPS, profiles, token storage, starting the app and waiting for it, building the SSH command, output formats, exit codes, the board (golden files of what it draws at several sizes, and each change and conflict), and habits: the commands, their output for a terminal, a pipe and `--json`, the order and wording of the day, and the board's panel.
+- **Unit tests** cover the connection layer over a socket and over HTTPS, profiles, token storage, starting the app and waiting for it, building the SSH command, output formats, exit codes, the board (golden files of what it draws at several sizes, and each change and conflict), and habits: the commands, their output for a terminal, a pipe and `--json`, the order and wording of the day, and the board's panel. The offline queue is tested through a gate (`fakeserver.Gate`) that takes the Mac away and brings it back at the same address: saving, sending in order with the saved keys, a dropped connection not making a change twice, changes turned down, and the sender in the background.
 - **Integration tests** (`internal/integration`) run the built binary, directly and inside a pseudo-terminal, against two servers, each reached through a Unix socket and over HTTPS: a fake one (`internal/fakeserver`), which can also misbehave on request, and the **real Todos server** from this repository (`src/server.js`), started on port 7442 with its own data file, token and socket in a temporary folder. A small relay stands in for `tailscale serve`. The real-server tests are skipped where Node or the app's sources aren't available. The habit commands and the board's habits panel run against both as well; the fake keeps no history and works no streaks out, so it is the real server that shows a check-in giving the streak it should.
 - **The real app.** One test starts Todos itself (Electron), in the background, through the command, with its own settings, data, socket and port. It is off unless asked for, because it puts an icon in the Dock for a few seconds:
 

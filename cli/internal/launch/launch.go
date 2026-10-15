@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -71,10 +72,16 @@ func SSHCommand(ssh, host string) ([]string, error) {
 	return []string{ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, "open -g -a Todos --args --background"}, nil
 }
 
-// StartError means the app could not be started, or did not come up.
-type StartError struct{ Msg string }
+// StartError means the app could not be started, or did not come up. Err is
+// why it was being started, when that was something worth keeping (the app
+// found not running on another Mac).
+type StartError struct {
+	Msg string
+	Err error
+}
 
 func (e *StartError) Error() string { return e.Msg }
+func (e *StartError) Unwrap() error { return e.Err }
 
 // Run runs a start command and reports its failure in a line.
 func Run(ctx context.Context, argv []string) error {
@@ -101,6 +108,19 @@ func RunShell(ctx context.Context, line string) error {
 	return Run(ctx, []string{"/bin/sh", "-c", line})
 }
 
+// Detach starts a program that carries on by itself after this one exits: in
+// a session of its own (so closing the terminal or the SSH connection doesn't
+// end it), with nothing to read and nowhere to write, in /.
+func Detach(argv []string) error {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Dir = "/"
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	return strings.TrimSpace(lines[len(lines)-1])
@@ -121,7 +141,7 @@ type Waiter struct {
 func (w *Waiter) Wait(ctx context.Context) error {
 	wait := func() error {
 		if err := w.Start(ctx); err != nil {
-			return &StartError{"could not start Todos: " + err.Error()}
+			return &StartError{Msg: "could not start Todos: " + err.Error()}
 		}
 		deadline := time.Now().Add(w.Timeout)
 		tick := time.NewTicker(w.Interval)
@@ -137,7 +157,7 @@ func (w *Waiter) Wait(ctx context.Context) error {
 				return ctx.Err()
 			}
 			if time.Now().After(deadline) {
-				return &StartError{fmt.Sprintf("Todos did not start within %s", w.Timeout.Round(time.Second))}
+				return &StartError{Msg: fmt.Sprintf("Todos did not start within %s", w.Timeout.Round(time.Second))}
 			}
 			select {
 			case <-ctx.Done():

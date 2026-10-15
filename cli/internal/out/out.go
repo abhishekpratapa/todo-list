@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"todos/internal/api"
+	"todos/internal/queue"
 )
 
 // Printer writes results. The zero value prints plainly.
@@ -303,6 +305,60 @@ func (p *Printer) Changed(verb string, t *api.Task) {
 func (p *Printer) Note(format string, args ...any) {
 	if p.Styled {
 		fmt.Fprintln(p.W, p.style(faint, "  "+fmt.Sprintf(format, args...)))
+	}
+}
+
+// Saved says, on a terminal, that a change was kept to be sent later.
+func (p *Printer) Saved(what string) {
+	fmt.Fprintln(p.W, p.style(yellow, "◷")+" Saved for later  "+p.style(bold, oneLine(what)))
+}
+
+// TurnedDown says, on a terminal, that the app refused a change sent from the queue.
+func (p *Printer) TurnedDown(what, why string) {
+	fmt.Fprintln(p.W, p.style(red, "✗")+" Turned down  "+p.style(bold, oneLine(what))+"  "+p.style(faint, oneLine(why)))
+}
+
+// Queue lists changes saved to be sent later. For a terminal: a line each
+// with its number, when it was made and what it is, and why the app turned
+// it down if it did. For a pipe: tab-separated fields, which are the number,
+// "waiting" or "refused", when it was made (RFC 3339), the kind, the task ("-"
+// if none), the text ("-" if none), and why it was refused ("-" if it wasn't).
+func (p *Printer) Queue(items []queue.Item) {
+	if !p.Styled {
+		for _, it := range items {
+			state, task, why := "waiting", "-", "-"
+			if !it.Waiting() {
+				state, why = "refused", oneLine(it.Refused.Message)
+			}
+			if it.Task > 0 {
+				task = strconv.Itoa(it.Task)
+			}
+			text := oneLine(it.Text)
+			if it.Kind == queue.KindSubtasks {
+				text = oneLine(strings.Join(it.Titles, "; "))
+			}
+			if text == "" {
+				text = "-"
+			}
+			fmt.Fprintf(p.W, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", it.ID, state, it.Made.UTC().Format(time.RFC3339), it.Kind, task, text, why)
+		}
+		return
+	}
+	if len(items) == 0 {
+		fmt.Fprintln(p.W, p.style(faint, "Nothing is waiting to be sent."))
+		return
+	}
+	width := len(strconv.Itoa(items[len(items)-1].ID))
+	for _, it := range items {
+		mark := p.style(yellow, "◷")
+		if !it.Waiting() {
+			mark = p.style(red, "✗")
+		}
+		fmt.Fprintf(p.W, "%s %s  %s  %s\n", mark, p.style(faint, fmt.Sprintf("%*d", width, it.ID)),
+			p.style(faint, it.Made.In(p.loc()).Format("Jan 2 15:04")), oneLine(it.Describe()))
+		if !it.Waiting() {
+			fmt.Fprintf(p.W, "  %s %s\n", strings.Repeat(" ", width), p.style(red, "turned down: "+oneLine(it.Refused.Message)))
+		}
 	}
 }
 

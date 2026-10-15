@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"todos/internal/api"
+	"todos/internal/queue"
 )
 
 // taskArgs completes task arguments with open tasks.
@@ -165,12 +166,12 @@ func (a *App) addCmd() *cobra.Command {
 				return usagef("nothing to add: give the task as a line (todos add \"Renew passport fri !high\"), or \"-\" to read lines from standard input")
 			}
 
-			s, err := a.connect(ctx)
-			if err != nil {
-				return err
-			}
-			a.p().Today = a.today(ctx, s)
 			if lines == nil {
+				s, err := a.connect(ctx)
+				if err != nil {
+					return err
+				}
+				a.p().Today = a.today(ctx, s)
 				fields, err := a.prompter().NewTask()
 				if err != nil {
 					return err
@@ -181,16 +182,11 @@ func (a *App) addCmd() *cobra.Command {
 				}
 				return a.result("Added", res, false)
 			}
-			for _, line := range lines {
-				res, err := s.Client.Capture(ctx, line)
-				if err != nil {
-					return err
-				}
-				if err := a.result("Added", res, len(lines) > 1); err != nil {
-					return err
-				}
+			changes := make([]change, len(lines))
+			for i, line := range lines {
+				changes[i] = change{item: func(int) queue.Item { return queue.Item{Kind: queue.KindAdd, Text: line} }}
 			}
-			return nil
+			return a.sendOrSave(ctx, changes)
 		},
 	}
 }
@@ -327,9 +323,11 @@ func (a *App) doneCmd() *cobra.Command {
 		Args:              atLeast(1, "which task?"),
 		ValidArgsFunction: a.taskArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.each(cmd.Context(), args, "Done", func(s *Session, id int) (*api.TaskResult, error) {
-				return s.Client.Complete(cmd.Context(), id, comment)
-			})
+			changes := make([]change, len(args))
+			for i, ref := range args {
+				changes[i] = change{ref: ref, item: func(id int) queue.Item { return queue.Item{Kind: queue.KindDone, Task: id, Text: comment} }}
+			}
+			return a.sendOrSave(cmd.Context(), changes)
 		},
 	}
 	cmd.Flags().StringVarP(&comment, "message", "m", "", "a closing comment")
@@ -566,9 +564,9 @@ func (a *App) subCmd() *cobra.Command {
 		Args:              atLeast(2, "which task, and what subtask?"),
 		ValidArgsFunction: a.firstArgTask,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.each(cmd.Context(), args[:1], "Updated", func(s *Session, id int) (*api.TaskResult, error) {
-				return s.Client.AddSubtasks(cmd.Context(), id, args[1:])
-			})
+			return a.sendOrSave(cmd.Context(), []change{{ref: args[0], item: func(id int) queue.Item {
+				return queue.Item{Kind: queue.KindSubtasks, Task: id, Titles: args[1:]}
+			}}})
 		},
 	})
 	// One command per thing that can be done to existing subtasks.
@@ -647,9 +645,9 @@ func (a *App) commentCmd() *cobra.Command {
 			if strings.TrimSpace(text) == "" {
 				return usagef("the comment is empty")
 			}
-			return a.each(cmd.Context(), args[:1], "Commented on", func(s *Session, id int) (*api.TaskResult, error) {
-				return s.Client.Comment(cmd.Context(), id, text)
-			})
+			return a.sendOrSave(cmd.Context(), []change{{ref: args[0], item: func(id int) queue.Item {
+				return queue.Item{Kind: queue.KindComment, Task: id, Text: text}
+			}}})
 		},
 	}
 }

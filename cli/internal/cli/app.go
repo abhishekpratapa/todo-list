@@ -57,6 +57,9 @@ type App struct {
 	Run func(ctx context.Context, argv []string) error
 	// Replace runs a program in this one's place, in a folder (claude).
 	Replace func(bin string, args []string, dir string) error
+	// Spawn starts a program that outlives this one (the queue's sender); nil
+	// means launch.Detach.
+	Spawn   func(argv []string) error
 	profile string
 	json    bool
 	noColor bool
@@ -118,7 +121,7 @@ func (a *App) Execute(ctx context.Context, args []string) int {
 	if exit == ExitInterrupted {
 		return exit
 	}
-	a.report(err, code, message)
+	a.report(err, code, message+a.queueNote(err))
 	return exit
 }
 
@@ -240,11 +243,13 @@ func (a *App) resolve() (*config.File, *config.Resolved, error) {
 }
 
 type connectOptions struct {
-	noStart bool // don't start the app if it isn't running (shell completion must never)
+	noStart bool // don't start the app if it isn't running (shell completion must never), nor send what is queued
+	noFlush bool // don't send what is queued: the caller will
 }
 
 // connect opens a session with the chosen profile: finds the app, starts it if
 // it is not running, and checks that the two sides are new enough for each other.
+// Changes saved while a paired Mac couldn't be reached are sent first.
 func (a *App) connect(ctx context.Context, opts ...connectOptions) (*Session, error) {
 	var opt connectOptions
 	if len(opts) > 0 {
@@ -294,7 +299,11 @@ func (a *App) connect(ctx context.Context, opts ...connectOptions) (*Session, er
 	if err := api.CheckVersions(info, a.Version); err != nil {
 		return nil, err
 	}
-	return &Session{Client: c, Info: info, Profile: res}, nil
+	s := &Session{Client: c, Info: info, Profile: res}
+	if !res.Local && !opt.noStart && !opt.noFlush {
+		a.sendOnConnect(ctx, s)
+	}
+	return s, nil
 }
 
 // startTimeout is how long to wait for the app: TODOS_START_TIMEOUT (seconds,
@@ -405,6 +414,7 @@ func (a *App) startRemote(ctx context.Context, c *api.Client, res *config.Resolv
 	}
 	failed.Msg = fmt.Sprintf("%s. Starting it over SSH (%s) did not work: %s. That needs you to be logged in to the Mac's desktop, and SSH to work without a password",
 		why.Error(), res.Profile.SSH, strings.TrimPrefix(failed.Msg, "could not start Todos: "))
+	failed.Err = why // the app is still down there, so a change can wait for it
 	return failed
 }
 

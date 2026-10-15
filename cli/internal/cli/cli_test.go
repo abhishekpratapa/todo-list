@@ -112,6 +112,7 @@ func newHarness(t *testing.T, tty, running bool) *harness {
 			h.ran = append(h.ran, argv)
 			return errors.New("not in a test")
 		},
+		Spawn: func([]string) error { return errors.New("not in a test") },
 	}
 	h.App.Out, h.App.Err = &h.out, &h.err
 	if running {

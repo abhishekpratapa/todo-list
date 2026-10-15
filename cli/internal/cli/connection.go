@@ -17,7 +17,7 @@ import (
 )
 
 func (a *App) connectionCommands() []*cobra.Command {
-	return []*cobra.Command{a.pairCmd(), a.profilesCmd(), a.statusInfoCmd()}
+	return []*cobra.Command{a.pairCmd(), a.profilesCmd(), a.statusInfoCmd(), a.queueCmd()}
 }
 
 // tildify shortens a path under the home folder for showing.
@@ -387,7 +387,8 @@ func (a *App) statusInfoCmd() *cobra.Command {
 			"Todos can't be reached, the error says which part is at fault: the app, the Mac,\n" +
 			"Tailscale, Remote Access, the token, or a version that is too old.\n\n" +
 			"With --json: {\"profile\", \"transport\": \"socket|https\", \"address\", \"appVersion\",\n" +
-			"\"apiVersion\": {\"version\", \"revision\"}, \"cliVersion\", \"minClientVersions\": {...}}.",
+			"\"apiVersion\": {\"version\", \"revision\"}, \"cliVersion\", \"minClientVersions\": {...},\n" +
+			"\"queue\": {\"waiting\", \"refused\"}}.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			s, err := a.connect(cmd.Context())
@@ -395,15 +396,18 @@ func (a *App) statusInfoCmd() *cobra.Command {
 				return err
 			}
 			transport, address := "https", ""
+			waiting, refused := 0, 0
 			if s.Profile.Local {
 				transport, address = "socket", s.Profile.Socket
 			} else {
 				address = s.Profile.Profile.URL
+				waiting, refused = a.queueFor(s.Profile.Name).Count()
 			}
 			if a.json {
 				return a.p().Value(map[string]any{
 					"profile": s.Profile.Name, "transport": transport, "address": address,
 					"appVersion": s.Info.AppVersion, "apiVersion": s.Info.APIVersion, "cliVersion": a.Version, "minClientVersions": s.Info.MinClientVersions,
+					"queue": map[string]int{"waiting": waiting, "refused": refused},
 				})
 			}
 			where := address
@@ -414,6 +418,9 @@ func (a *App) statusInfoCmd() *cobra.Command {
 			fmt.Fprintf(a.Out, "reaches  %s\n", where)
 			fmt.Fprintf(a.Out, "Todos    %s (API %d.%d)\n", s.Info.AppVersion, s.Info.APIVersion.Version, s.Info.APIVersion.Revision)
 			fmt.Fprintf(a.Out, "todos    %s\n", a.Version)
+			if waiting+refused > 0 {
+				fmt.Fprintf(a.Out, "queue    %d waiting, %d turned down (todos queue)\n", waiting, refused)
+			}
 			return nil
 		},
 	}
