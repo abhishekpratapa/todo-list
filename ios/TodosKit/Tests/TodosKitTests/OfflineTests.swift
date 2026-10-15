@@ -334,9 +334,13 @@ struct ReplayTests {
     @Test("changes go out in the order they were made, each with its own key, and the queue empties")
     func order() async {
         await store.replaceList([task(1), task(2)], version: 1)
-        let a = await store.add(.comment(task: 1, text: "first"))
-        let b = await store.add(.complete(task: 2))
-        let c = await store.add(.capture(line: "Buy milk tomorrow"), at: Date(timeIntervalSince1970: 1_792_072_800))
+        // Each dated: the store keeps changes in time order, so a change dated before the one
+        // ahead of it is moved after it. (Dated "now", the first two outran the third once
+        // its fixed date had passed.)
+        let typed = Date(timeIntervalSince1970: 1_792_072_800)
+        let a = await store.add(.comment(task: 1, text: "first"), at: typed.addingTimeInterval(-120))
+        let b = await store.add(.complete(task: 2), at: typed.addingTimeInterval(-60))
+        let c = await store.add(.capture(line: "Buy milk tomorrow"), at: typed)
         stub.reply(201, ok(task(1, rev: 2)))
         stub.reply(200, ok(task(2, rev: 2)))
         stub.reply(201, #"{"task":\#(json(task(3, title: "Buy milk"))),"parsed":{"title":"Buy milk","fields":{}}}"#)
