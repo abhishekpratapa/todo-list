@@ -299,5 +299,6 @@ struct TodosWidgets: WidgetBundle {
     var body: some Widget {
         DueWidget()
         HabitsWidget()
+        HabitYearWidget()
     }
 }

@@ -386,6 +386,46 @@ struct HabitIntegrationTests {
         #expect(after.events.map(\.slot) == ["morning", "evening"] && after.events.allSatisfy { $0.source == "widget" })
     }
 
+    @Test("the year so far, for the year widget: fetched from the Mac once a day, and read with today's own check-ins")
+    func theYear() async throws {
+        let brush = try hub.habitCreate(["name": "Brush teeth", "schedule": Self.twice], at: at(0, "06:00"))
+        let gym = try hub.habitCreate(["name": "Gym", "schedule": ["kind": "weekly", "target": 3]], at: at(0, "06:00"))
+        try hub.habitCheckIn(brush.id, ["slot": "morning"], at: at(0, "07:00"))
+        try hub.habitCheckIn(brush.id, ["slot": "evening"], at: at(0, "21:00"))
+        try hub.habitCheckIn(brush.id, ["slot": "morning"], at: at(1, "07:00"))
+        try hub.habitCheckIn(gym.id, [:], at: at(1, "18:00"))
+        try hub.habitCheckIn(brush.id, ["slot": "morning"], at: at(3, "07:00"))
+        try hub.habitCheckIn(brush.id, ["slot": "evening"], at: at(3, "21:00"))
+
+        let fetched = try await engine.refreshHabits()
+        let today = try #require(fetched.habits.map(\.today.day).max())
+        try await engine.refreshCalendar(today: today)
+        let calendar = try #require(await store.habits.calendar)
+        let january = Day(year: today.year, month: 1, day: 1)!
+        #expect(calendar.year == today.year && calendar.asOf == today && calendar.habits.map(\.habit) == [brush.id, gym.id])
+        #expect(calendar.habits.allSatisfy { $0.days.count == today.days(since: january, calendar: .utc) + 1 }, "January 1 to today")
+        guard day(0).year == today.year else { return } // early January: the days above are last year's
+
+        let year = HabitYear(calendar: calendar, habits: fetched.habits.reckoned(now: Date(), zone: Self.zone), today: today)
+        let mark = { (offset: Int) in year.marks[self.day(offset).days(since: january, calendar: .utc)] }
+        #expect(mark(-1) == .none, "before the habits began")
+        #expect(mark(0) == .complete && mark(1) == .partial && mark(2) == .missed && mark(3) == .complete)
+        #expect(year.marks[year.today] == .open && year.completed == 2)
+
+        // Asked again the same day, with the same habits: nothing to fetch, so it works with the Mac out of reach.
+        try hub.command("listening", ["on": false])
+        try await engine.refreshCalendar(today: today)
+        try hub.command("listening", ["on": true])
+        // A new habit: fetched again, and it is in.
+        let floss = try hub.habitCreate(["name": "Floss", "schedule": Self.twice])
+        try await engine.refreshHabits()
+        try await engine.refreshCalendar(today: today)
+        #expect(await store.habits.calendar?.habits.map(\.habit) == [brush.id, gym.id, floss.id])
+        // A new day: fetched again.
+        try await engine.refreshCalendar(today: today.adding(days: 1))
+        #expect(await store.habits.calendar?.asOf == today.adding(days: 1))
+    }
+
     @Test("habits are announced on the live connection, separately from the list")
     func liveUpdates() async throws {
         let made = try hub.habitCreate(["name": "Brush teeth", "schedule": Self.twice])

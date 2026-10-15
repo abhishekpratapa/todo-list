@@ -38,6 +38,8 @@ public struct CachedHabits: Codable, Sendable, Equatable {
     public var syncedAt: Date?
     /// False once the Mac has said it has no habits at all: its Todos is older than they are.
     public var supported: Bool?
+    /// How each habit went on each day of this year so far, for the year widget.
+    public var calendar: HabitCalendar?
 
     public init() {}
 }
@@ -91,6 +93,12 @@ public actor LocalStore {
         habits.zone = zone
         habits.syncedAt = syncedAt
         habits.supported = true
+        saveHabits()
+    }
+
+    /// Stores how each habit went on each day of the year so far.
+    public func replaceCalendar(_ calendar: HabitCalendar) {
+        habits.calendar = calendar
         saveHabits()
     }
 

@@ -18,6 +18,7 @@ struct TodosApp: App {
                 .onOpenURL { url in
                     if let task = AppLinks.task(from: url) { model.requestedTask = task }
                     if let habit = AppLinks.habit(from: url) { model.requestedHabit = habit }
+                    if AppLinks.isHabits(url) { model.requestedHabits = true }
                 }
         }
         // Only this one modifier on the scene. With a second (watching the scene phase here as

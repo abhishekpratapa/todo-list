@@ -280,6 +280,35 @@ public struct SyncEngine: Sendable {
         return await store.habits
     }
 
+    /// Fetches how each habit went on each day of this year so far, for the year widget,
+    /// and stores it. Days before yesterday no longer change, and today and yesterday are
+    /// worked out on the phone, so this is only needed once a day, or when a habit is new.
+    /// `today` is the habit day it is now.
+    public func refreshCalendar(today: Day) async throws {
+        let cached = await store.habits
+        let ids = cached.habits.map(\.id)
+        if let calendar = cached.calendar, calendar.asOf == today, Set(calendar.habits.map(\.habit)) == Set(ids) { return }
+        let start = Day(year: today.year, month: 1, day: 1)!
+        let client = self.client
+        let marks = try await withThrowingTaskGroup(of: HabitCalendar.Marks?.self) { group in
+            for id in ids {
+                group.addTask {
+                    do {
+                        return HabitCalendar.Marks(habit: id, days: try await client.habitHistory(id, from: start, to: today).days)
+                    } catch HubError.notFound {
+                        return nil // deleted in the meantime
+                    }
+                }
+            }
+            var all: [HabitCalendar.Marks] = []
+            for try await found in group {
+                if let found { all.append(found) }
+            }
+            return all.sorted { $0.habit < $1.habit }
+        }
+        await store.replaceCalendar(HabitCalendar(year: today.year, asOf: today, habits: marks))
+    }
+
     /// Fetches one task with its history and stores it.
     @discardableResult
     public func fetch(_ id: Int) async throws -> TodoTask? {

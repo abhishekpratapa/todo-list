@@ -2,7 +2,7 @@
 
 A native iPhone app for the list kept by the Todos app on your Mac. The Mac stays the only copy: the iPhone reaches it over your Tailscale tailnet, through the same `/api/v1` any other client uses (`docs/openapi.json`).
 
-It does pairing, the task list and detail, editing, quick capture, habits with streaks, and live updates, and it keeps working without a connection: the list is kept on the iPhone, and changes made offline are sent when the Mac can be reached again. It also has reminders as notifications on the iPhone, two widgets (one with buttons that check in habits), Shortcuts actions (for Siri and the Action button too) and a share sheet extension.
+It does pairing, the task list and detail, editing, quick capture, habits with streaks, and live updates, and it keeps working without a connection: the list is kept on the iPhone, and changes made offline are sent when the Mac can be reached again. It also has reminders as notifications on the iPhone, three widgets (one with buttons that check in habits, one with the year's habits as a dot a day), Shortcuts actions (for Siri and the Action button too) and a share sheet extension.
 
 ```
 Todos.xcodeproj   the Xcode project (app and its tests)
@@ -139,7 +139,7 @@ Reminders are local notifications scheduled on the iPhone itself, from what the 
 
 ### Widgets
 
-There are two: **Due Today** for tasks and **Habits**. Touch and hold the home screen, tap **Edit → Add Widget**, choose **Todos**, swipe to the one and the size you want and tap **Add Widget**.
+There are three: **Due Today** for tasks, **Habits**, and **Habit Year**. Touch and hold the home screen, tap **Edit → Add Widget**, choose **Todos**, swipe to the one and the size you want and tap **Add Widget**. For the Lock Screen, touch and hold it, tap **Customize**, then the Lock Screen, then **Add Widgets**, and choose **Todos**.
 
 **Due Today.** Tapping a task opens it.
 
@@ -162,11 +162,20 @@ There are two: **Due Today** for tasks and **Habits**. Touch and hold the home s
 - The button only checks in. To take a check-in back, or to log yesterday, open the app.
 - A widget drawn before the habit's day turned over (3 AM unless you changed it) checks in the day it was showing, as long as that day can still be logged.
 
+**Habit Year.** A dot for every day of the year, January 1 at the top left, twenty to a row on the large size. A day is lit when every habit that asked for something that day was done, fainter when some of it was, and dim when none of it was; the days before your habits began are fainter still. A rest day asks nothing, and a habit counted in weeks asks nothing of any one day: a gym visit lights a day only when nothing else was asked of it. Today is the orange dot, a ring until everything is done and filled once it is. The days to come are dim. The top line says how many days were done in full, out of the days so far that asked for something. Tapping it opens the Habits tab.
+
+| Size | Shows |
+| --- | --- |
+| Medium, large | The year. |
+| Lock screen | Circular: how many days in a row everything was done. Rectangular: the last eight weeks as columns of dots (Monday at the top), with the run of days and the count for the year. Inline: both, in a line. |
+
+The run of days counts back from today, which counts once it is done; a day that asked nothing, or yesterday while it can still be logged, neither breaks it nor adds to it. It starts again on January 1. How each day went comes from the Mac: the app asks for the year so far once a day, or when there is a new habit, and keeps it on the iPhone, so the widget works without a connection. Today and yesterday come from the habits as they stand on the iPhone, so a check-in shows at once.
+
 Large is the biggest size iOS offers on an iPhone: it takes four of a page's six rows of icons. iOS gives neither an app nor a Mac a way to put a widget on the home screen for you.
 
 If an update adds a size and a widget that was already on the home screen won't take it (it flashes and goes back to the size it had), remove that widget and add it again, or restart the iPhone. iOS keeps the old list of sizes for a widget that is already placed until the home screen restarts. Seen on iOS 26 when the large size was added.
 
-Both widgets read what is kept on the iPhone, with your waiting changes applied, so they show what the app shows. Due Today does not contact the Mac at all; Habits does only to send a check-in made with its button. They update when the app does, after a tap on a button, and when the day turns over (midnight for tasks, the habit's day start for habits).
+The widgets read what is kept on the iPhone, with your waiting changes applied, so they show what the app shows. Due Today and Habit Year do not contact the Mac at all; Habits does only to send a check-in made with its button. They update when the app does, after a tap on a button, and when the day turns over (midnight for tasks, the habit's day start for habits).
 
 ### Shortcuts, Siri and the Action button
 

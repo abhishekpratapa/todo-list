@@ -59,6 +59,8 @@ final class AppModel {
     var requestedTask: Int?
     /// A habit to open, likewise.
     var requestedHabit: Int?
+    /// The Habits tab to bring forward: set when the year widget is tapped.
+    var requestedHabits = false
 
     @ObservationIgnored private let credentials: any CredentialStore
     @ObservationIgnored private let makeClient: (HubCredentials) -> HubClient
@@ -401,11 +403,17 @@ final class AppModel {
     /// Fetches the habits, and tells the Mac where this iPhone is if it has that wrong:
     /// "today" is told by the time zone the user is in.
     private func loadHabits(with engine: SyncEngine) async throws {
-        let fetched = try await engine.refreshHabits()
+        var fetched = try await engine.refreshHabits()
         let here = TimeZone.current.identifier
-        guard fetched.supported == true, fetched.zone != here else { return }
-        try await engine.client.reportZone(here)
-        try await engine.refreshHabits()
+        if fetched.supported == true, fetched.zone != here {
+            try await engine.client.reportZone(here)
+            fetched = try await engine.refreshHabits()
+        }
+        // The year so far, for the year widget: once a day. It is a picture of the past,
+        // so if it can't be fetched the habits themselves are still fine.
+        if fetched.supported == true, let today = fetched.habits.map(\.today.day).max() {
+            try? await engine.refreshCalendar(today: today)
+        }
     }
 
     /// Fetches just the habits: for when the Mac says they changed.

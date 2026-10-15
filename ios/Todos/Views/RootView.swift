@@ -71,6 +71,12 @@ struct MainView: View {
             dismissSheets()
             tab = .habits
         }
+        .onChange(of: model.requestedHabits, initial: true) { _, wanted in
+            guard wanted else { return }
+            model.requestedHabits = false
+            dismissSheets()
+            tab = .habits
+        }
         .animation(.snappy, value: model.notice)
         .sheet(isPresented: $capturing) { QuickCaptureView() }
         .sheet(isPresented: $showingSettings) { SettingsView() }
