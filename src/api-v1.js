@@ -33,8 +33,10 @@ import {
 //   4  The release with the command-line client. GET /info; the whole API on the local
 //      socket (see socket.js), where a few routes exist that are served nowhere else.
 //   5  Habits: everything under /habits, and a `habits` event in the live updates.
+//   6  X-Todos-Claude-Session on every change, so a Claude session that reaches this
+//      list from another Mac is credited with what it does.
 export const API_VERSION = 1;
-export const API_REVISION = 5;
+export const API_REVISION = 6;
 const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 // The oldest version of each kind of client that still works with this app. A
@@ -65,7 +67,7 @@ function sendHabit(res, status, habit, extra = {}) {
 }
 
 // A JSON object containing only the fields this endpoint accepts.
-function only(body, allowed) {
+export function only(body, allowed) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RequestError(400, 'invalid', 'Expected a JSON object.');
   const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
   if (unknown.length) throw new RequestError(400, 'unknown_field', `Unknown field${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}. Allowed: ${allowed.join(', ')}.`);
@@ -90,7 +92,7 @@ function expectedRev(req, fallback, what = 'task') {
 // A client that might send the same change twice (a retry after the answer was lost,
 // or a change queued while offline) names it with an Idempotency-Key header. The
 // second time nothing is done again, and the answer is the task as it is now.
-function idempotencyKey(req) {
+export function idempotencyKey(req) {
   const raw = req.headers['idempotency-key'];
   if (raw === undefined) return undefined;
   const key = String(raw).trim();
@@ -179,7 +181,7 @@ function listTasks(q) {
 
 // The folder a session was started in, as the command-line client reports it:
 // an existing folder, by its full path. Null when it didn't say.
-function startedIn(folder) {
+export function startedIn(folder) {
   if (folder === undefined || folder === null) return null;
   let found = false;
   try {
@@ -189,6 +191,18 @@ function startedIn(folder) {
   }
   if (!found) throw new RequestError(400, 'invalid', '"folder" must be the full path of an existing folder.');
   return path.resolve(folder);
+}
+
+// Who a change is by. "me" unless the request says it comes from a Claude session,
+// with X-Todos-Claude-Session: "Claude Code · my-repo", as the MCP server sends it
+// when it works on this list from another Mac. The change is then credited to the
+// session, as it would be had the session run here. Anyone with the token could
+// send it: like the device labels, it says who did something, and grants nothing.
+function author(req) {
+  const raw = req.headers['x-todos-claude-session'];
+  if (raw === undefined) return 'me';
+  const label = String(raw).replace(/[^\w .,()'’·-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  return /^(Claude|Cowork)\b/.test(label) ? label : 'me';
 }
 
 function subtaskOf(taskId, subtaskId) {
@@ -237,7 +251,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
     ['POST', '/tasks', async ({ req, res, ctx }) => {
       const body = only(await readJson(req, ctx.bodyLimit), [...EDITABLE, 'subtasks']);
       if (!('title' in body)) throw new RequestError(400, 'invalid', 'A task needs a title.');
-      const task = createTodo(body, 'me', await write(req, ctx));
+      const task = createTodo(body, author(req), await write(req, ctx));
       res.setHeader('Location', `/api/v1/tasks/${task.id}`);
       return sendTask(res, 201, task);
     }],
@@ -245,7 +259,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
     ['GET', '/tasks/{id}', ({ res, params }) => sendTask(res, 200, getTodo(params.id))],
     ['PATCH', '/tasks/{id}', async ({ req, res, ctx, params }) => {
       const { rev, ...patch } = only(await readJson(req, ctx.bodyLimit), [...EDITABLE, 'rev']);
-      const { todo, next } = updateTodo(params.id, patch, 'me', { ifRev: expectedRev(req, rev), ...(await write(req, ctx)) });
+      const { todo, next } = updateTodo(params.id, patch, author(req), { ifRev: expectedRev(req, rev), ...(await write(req, ctx)) });
       return sendTask(res, 200, todo, { next });
     }],
     ['DELETE', '/tasks/{id}', ({ req, res, url, params }) => {
@@ -257,7 +271,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
     // Additive changes below need no revision: they can't overwrite anyone else's work.
     ['POST', '/tasks/{id}/complete', async ({ req, res, ctx, params }) => {
       const body = req.headers['content-length'] > 0 ? only(await readJson(req, ctx.bodyLimit), ['comment']) : {};
-      const { todo, next } = updateTodo(params.id, { status: 'done', comment: body.comment }, 'me', await write(req, ctx));
+      const { todo, next } = updateTodo(params.id, { status: 'done', comment: body.comment }, author(req), await write(req, ctx));
       return sendTask(res, 200, todo, { next });
     }],
 
@@ -265,7 +279,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
       const body = only(await readJson(req, ctx.bodyLimit), ['title', 'titles']);
       const titles = [body.title, ...(Array.isArray(body.titles) ? body.titles : [])].filter((t) => typeof t === 'string' && t.trim());
       if (!titles.length) throw new RequestError(400, 'invalid', 'Send "title", or "titles" as a list.');
-      return sendTask(res, 201, updateTodo(params.id, { add_subtasks: titles }, 'me', await write(req, ctx)).todo);
+      return sendTask(res, 201, updateTodo(params.id, { add_subtasks: titles }, author(req), await write(req, ctx)).todo);
     }],
     ['PATCH', '/tasks/{id}/subtasks/{subtaskId}', async ({ req, res, ctx, params }) => {
       const body = only(await readJson(req, ctx.bodyLimit), ['title', 'done']);
@@ -276,17 +290,17 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
       if (body.done === true) patch.check_subtasks = [id];
       else if (body.done === false) patch.uncheck_subtasks = [id];
       else if ('done' in body) throw new RequestError(400, 'invalid', '"done" must be true or false.');
-      return sendTask(res, 200, updateTodo(params.id, patch, 'me', await write(req, ctx)).todo);
+      return sendTask(res, 200, updateTodo(params.id, patch, author(req), await write(req, ctx)).todo);
     }],
     ['DELETE', '/tasks/{id}/subtasks/{subtaskId}', async ({ req, res, ctx, params }) => {
       subtaskOf(params.id, params.subtaskId);
-      return sendTask(res, 200, updateTodo(params.id, { remove_subtasks: [Number(params.subtaskId)] }, 'me', await write(req, ctx)).todo);
+      return sendTask(res, 200, updateTodo(params.id, { remove_subtasks: [Number(params.subtaskId)] }, author(req), await write(req, ctx)).todo);
     }],
 
     ['POST', '/tasks/{id}/comments', async ({ req, res, ctx, params }) => {
       const { text } = only(await readJson(req, ctx.bodyLimit), ['text']);
       if (typeof text !== 'string' || !text.trim()) throw new RequestError(400, 'invalid', 'A comment needs "text".');
-      return sendTask(res, 201, updateTodo(params.id, { comment: text }, 'me', await write(req, ctx)).todo);
+      return sendTask(res, 201, updateTodo(params.id, { comment: text }, author(req), await write(req, ctx)).todo);
     }],
     ['GET', '/tasks/{id}/activity', ({ res, url, params }) => {
       const kind = url.searchParams.get('kind');
@@ -303,7 +317,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
     ['POST', '/tasks/{id}/claude-session', async ({ req, res, ctx, params }) => {
       const body = req.headers['content-length'] > 0 ? only(await readJson(req, ctx.bodyLimit), ['folder']) : {};
       const folder = startedIn(body.folder);
-      return sendTask(res, 200, sessions.started(getTodo(params.id), { folder, ...(await write(req, ctx)) }).todo);
+      return sendTask(res, 200, (await sessions.started(getTodo(params.id), { folder, ...(await write(req, ctx)) })).todo);
     }, 'socket'],
 
     // Quick capture: one line, parsed exactly as the app's capture box and add bar parse it.
@@ -313,7 +327,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
       if (typeof text !== 'string' || !text.trim()) throw new RequestError(400, 'invalid', 'Send the line to capture as "text".');
       const parsed = readLine(text, at);
       if (!parsed.title) throw new RequestError(400, 'invalid', 'That line has no title, only dates and markers.');
-      const task = createTodo({ ...parsed.fields, title: parsed.title }, 'me', await write(req, ctx));
+      const task = createTodo({ ...parsed.fields, title: parsed.title }, author(req), await write(req, ctx));
       res.setHeader('Location', `/api/v1/tasks/${task.id}`);
       return sendTask(res, 201, task, { parsed });
     }],
@@ -343,7 +357,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
       return json(res, 200, listHabits({ archived: archived === 'true' }));
     }],
     ['POST', '/habits', async ({ req, res, ctx }) => {
-      const habit = createHabit(only(await readJson(req, ctx.bodyLimit), HABIT_EDITABLE), 'me', await write(req, ctx));
+      const habit = createHabit(only(await readJson(req, ctx.bodyLimit), HABIT_EDITABLE), author(req), await write(req, ctx));
       res.setHeader('Location', `/api/v1/habits/${habit.id}`);
       return sendHabit(res, 201, habit);
     }],
@@ -368,16 +382,16 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
     // a device that was offline at the time.
     ['POST', '/habits/{id}/checkins', async ({ req, res, ctx, params }) => {
       const body = await optional(req, ctx, ['slot', 'at', 'zone', 'day', 'source']);
-      const { habit, checkin } = checkIn(params.id, body, 'me', await write(req, ctx));
+      const { habit, checkin } = checkIn(params.id, body, author(req), await write(req, ctx));
       return sendHabit(res, checkin ? 201 : 200, habit, { checkin });
     }],
     ['POST', '/habits/{id}/undo', async ({ req, res, ctx, params }) => {
       const body = await optional(req, ctx, ['checkins', 'keys', 'slot', 'day', 'skip', 'at', 'zone']);
-      return sendHabit(res, 200, undo(params.id, body, 'me', await write(req, ctx)).habit);
+      return sendHabit(res, 200, undo(params.id, body, author(req), await write(req, ctx)).habit);
     }],
     ['POST', '/habits/{id}/skips', async ({ req, res, ctx, params }) => {
       const body = await optional(req, ctx, ['day', 'at', 'zone', 'reason']);
-      const { habit, skip } = skipDay(params.id, body, 'me', await write(req, ctx));
+      const { habit, skip } = skipDay(params.id, body, author(req), await write(req, ctx));
       return sendHabit(res, skip ? 201 : 200, habit, { skip });
     }],
   ].map(([method, template, handler, where]) => ({

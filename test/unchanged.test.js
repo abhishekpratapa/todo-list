@@ -6,7 +6,7 @@
 // socket open, since that is how the app runs it.
 //
 // Known, intended differences, each checked here rather than ignored:
-//   - GET /api/v1/meta reports API revision 5 instead of 3, and the app's own
+//   - GET /api/v1/meta reports API revision 6 instead of 3, and the app's own
 //     version from package.json instead of 1.6.1.
 //   - The dashboard's page and its script (/, /index.html, /app.js) gained the
 //     Habits section. The stylesheet is untouched: habits have their own.
@@ -350,7 +350,7 @@ test('with remote access on, the API, the dashboard and every refusal are what 1
     // The one intended difference: the API's revision went from 3 to 5.
     'phone: GET /api/v1/meta': (after, earlier) => {
       assert.equal(earlier.body.api.revision, 3);
-      assert.equal(after.body.api.revision, 5);
+      assert.equal(after.body.api.revision, 6);
       assert.equal(earlier.body.app.version, '1.6.1');
       assert.equal(after.body.app.version, JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version);
       assert.deepEqual({ ...after, body: { api: { ...after.body.api, revision: 3 }, app: { ...after.body.app, version: '1.6.1' } } }, earlier);

@@ -79,7 +79,8 @@ export function startInDesktop({ session }) {
 //   saveSettings   writes them
 //   pickFolder     (todo, startAt) asks the user for a folder; resolves to it, or to null if they cancel
 //   workDir        () => where launcher files are kept
-export function createHandoff({ settings, saveSettings, pickFolder, workDir }) {
+//   record         where a start is recorded, when it isn't this Mac's own list (see claude-session.js)
+export function createHandoff({ settings, saveSettings, pickFolder, workDir, record }) {
   const remembered = (todo) => (todo.project && settings.projectFolders[todo.project]) || null;
   // The folder remembered for the task's project, as long as it is still there.
   const folderFor = (todo) => {
@@ -88,6 +89,7 @@ export function createHandoff({ settings, saveSettings, pickFolder, workDir }) {
   };
   const sessions = createSessions({
     folderFor,
+    record,
     remember(todo, folder) {
       if (todo.project) settings.projectFolders[todo.project] = folder;
       settings.lastFolder = folder;
@@ -119,7 +121,7 @@ export function createHandoff({ settings, saveSettings, pickFolder, workDir }) {
       if (target === 'terminal') await startInTerminal({ todo, session, workDir: workDir() });
       else await startInDesktop({ session });
       settings.handoffTarget = target;
-      sessions.started(todo, { folder, from: target });
+      await sessions.started(todo, { folder, from: target });
       return { started: true, target, folder: tildify(folder) };
     },
   };

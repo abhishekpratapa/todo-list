@@ -103,17 +103,24 @@ const STARTED = {
 //   folderFor(todo)         the folder to suggest for a task, or null
 //   remember(todo, folder)  called with the folder a session was started in
 // The desktop app remembers one per project. Without it there is nothing to remember.
-export function createSessions({ folderFor = () => null, remember = () => {} } = {}) {
+// And where a start is recorded:
+//   record(todo, { comment, via, key, as })  the task becomes Claude's and gets the
+//                           note. On this Mac's own list unless given; a Mac that uses
+//                           another Mac's list records it there (see host.js).
+const recordHere = (todo, { comment, via, key }) => updateTodo(todo.id, { assignee: 'claude', comment }, 'me', { via, key });
+
+export function createSessions({ folderFor = () => null, remember = () => {}, record = recordHere } = {}) {
   return {
     // What a session on this task would be started with.
     session: (todo) => sessionFor(todo, folderFor(todo)),
 
     // Records that one was started: the task becomes Claude's, its activity says
     // so, and the folder is remembered. `from` is 'desktop', 'terminal' (the app's
-    // button) or 'command line'. Returns { todo, next } like any other change.
-    started(todo, { folder = null, from = 'command line', via, key } = {}) {
+    // button) or 'command line'. Returns { todo, next } like any other change, or
+    // a promise of it when the start is recorded on another Mac.
+    started(todo, { folder = null, from = 'command line', via, key, as } = {}) {
       if (folder) remember(todo, folder);
-      return updateTodo(todo.id, { assignee: 'claude', comment: STARTED[from](folder) }, 'me', { via, key });
+      return record(todo, { comment: STARTED[from](folder), via, key, as });
     },
   };
 }

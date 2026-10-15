@@ -267,7 +267,8 @@ test('a habits file put back with a version seen before is still announced', asy
 
 test('the version the API reports, and that older clients are still welcome', async () => {
   const meta = (await phone('GET', '/meta')).body;
-  assert.deepEqual(meta.api, { version: 1, revision: 5 });
+  assert.equal(meta.api.version, 1);
+  assert.ok(meta.api.revision >= 5, 'habits came in revision 5');
   const info = (await phone('GET', '/info')).body;
   assert.deepEqual(info.minClientVersions, { cli: '0.1.0', ios: '1.0' }, 'habits ask nothing new of the clients already out there');
 });

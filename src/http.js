@@ -17,7 +17,7 @@ export function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-async function readBody(req, limit) {
+export async function readBody(req, limit) {
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {

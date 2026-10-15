@@ -13,6 +13,11 @@
 // user can open (see socket.js). That listener serves /health and /api/v1, with
 // no sign-in, whether remote access is on or off. It is how the `todos` command
 // reaches the app on this Mac, and the only place local-only routes are served.
+//
+// Given a `host`, this Mac uses another Mac's list (see host.js). What the window
+// and the socket ask for is then passed on to that Mac and answered from its list;
+// this Mac's own file is left alone. The pages, the health check and starting
+// Claude sessions stay here: the folders and programs are this Mac's.
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -26,9 +31,10 @@ import { parseQuickAdd } from './quickadd.js';
 import { HabitError, checkIn, habitHistory, habitsState, listHabits, skipDay, undo, updateHabit, watchHabits } from './habits.js';
 import * as habitText from './habit-text.js';
 import { COOKIE, bearerToken, parseCookies, rateLimiter } from './auth.js';
-import { json, readJson } from './http.js';
-import { createV1, health } from './api-v1.js';
+import { RequestError, json, readBody, readJson } from './http.js';
+import { createV1, health, idempotencyKey, only, startedIn } from './api-v1.js';
 import { createSessions } from './claude-session.js';
+import { HostError, recordOnHost } from './host.js';
 import { listenOnSocket, socketPath as defaultSocketPath } from './socket.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -108,7 +114,10 @@ const cleanLabel = (v) => String(v || '').replace(/[^\w .,()'’-]/g, '').trim()
 //
 // `remote` is the remote-access state from createRemote(). Without it, or while
 // it is disabled, there is no sign-in and nothing new is served.
-export function startServer({ port = PORT, handoff = null, remote = null, socketPath = null } = {}) {
+//
+// `host` is the other Mac whose list this one uses, from createHost(), or null for
+// this Mac's own. The desktop app keeps remote access off meanwhile.
+export function startServer({ port = PORT, handoff = null, remote = null, socketPath = null, host = null } = {}) {
   let localHosts = new Set();
   let lastVersion = load().version;
   const streams = new Map(); // open live-update responses -> kind of session that opened them
@@ -291,6 +300,72 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
 
   const v1 = createV1({ remote, openStream, viaLabel, sessions: handoff?.session && handoff?.started ? handoff : createSessions() });
 
+  // ---------- using another Mac's list ----------
+
+  // Starting Claude sessions: the folders and the launching are this Mac's, the
+  // record of it goes to the host.
+  const hostSessions = host && (handoff?.session && handoff?.started ? handoff : createSessions({ record: recordOnHost(host) }));
+
+  // A task as the host has it, for starting a Claude session on it here.
+  async function hostTask(id) {
+    const answer = await host.request('GET', `/api/v1/tasks/${id}`);
+    if (answer.status === 200) return answer.body.task;
+    const message = answer.body?.error?.message || `${host.name} answered ${answer.status}.`;
+    if (answer.status === 404) throw new NotFoundError(message);
+    throw new RequestError(answer.status, answer.body?.error?.code || 'host_refused', message);
+  }
+
+  // The window's requests. The page comes from here; what it asks for comes from
+  // the host, except starting a Claude session. Resolves to true if it answered.
+  async function viaHost(req, res, ctx, url) {
+    const p = url.pathname;
+    if (!p.startsWith('/api/') || p.startsWith('/api/v1/') || p === '/api/health') return false;
+    // Only this Mac's own windows: nothing reaches the host through here from elsewhere.
+    if (ctx.session?.kind !== 'app') return refuse(req, res, 403, 'not_here', `This Mac uses the list on ${host.name}. Connect to that Mac instead.`) ?? true;
+
+    if (p === '/api/todos' && req.method === 'GET') {
+      const answer = await host.request('GET', '/api/todos');
+      if (answer.status !== 200) return json(res, answer.status, answer.body) ?? true;
+      const { session, ...list } = answer.body;
+      return json(res, 200, { ...list, handoff: handoff ? handoff.info() : null, host: host.name }) ?? true;
+    }
+    const h = p.match(/^\/api\/todos\/(\d+)\/handoff$/);
+    if (h && req.method === 'POST') {
+      if (!handoff) return json(res, 501, { error: 'Starting a Claude session is only available in the Todos app.' }) ?? true;
+      const options = await readJson(req, ctx.bodyLimit);
+      return json(res, 200, await handoff.start(await hostTask(h[1]), options)) ?? true;
+    }
+    host.forward(req, res, {
+      path: url.pathname + url.search,
+      body: await readBody(req, ctx.bodyLimit),
+      refuse: (status, code, message) => json(res, status, { error: message, code }),
+    });
+    return true;
+  }
+
+  // The socket's requests: the `todos` command and Claude sessions on this Mac work
+  // on the host's list. "Who am I" and starting a Claude session are answered here.
+  async function v1ViaHost(req, res, ctx, url) {
+    const p = url.pathname.slice('/api/v1'.length);
+    const refuseHere = (status, code, message) => json(res, status, { error: { code, message } });
+    const as = cleanLabel(req.headers['x-todos-client']) || 'command line';
+    if (p === '/session') return req.method === 'GET' ? json(res, 200, { kind: 'local' }) : refuseHere(404, 'not_found', 'No such endpoint.');
+    const cs = p.match(/^\/tasks\/(\d+)\/claude-session$/);
+    if (cs) {
+      if (req.method === 'GET') return json(res, 200, hostSessions.session(await hostTask(cs[1])));
+      if (req.method === 'POST') {
+        const body = req.headers['content-length'] > 0 ? only(await readJson(req, ctx.bodyLimit), ['folder']) : {};
+        const folder = startedIn(body.folder);
+        const { todo } = await hostSessions.started(await hostTask(cs[1]), { folder, key: idempotencyKey(req), as });
+        res.setHeader('ETag', `"${todo.rev}"`);
+        return json(res, 200, { task: todo });
+      }
+      res.setHeader('Allow', 'GET, POST');
+      return refuseHere(405, 'method_not_allowed', `${req.method} is not supported here.`);
+    }
+    return host.forward(req, res, { path: url.pathname + url.search, body: await readBody(req, ctx.bodyLimit), as, refuse: refuseHere });
+  }
+
   // ---------- routes ----------
 
   function sendFile(res, file) {
@@ -309,6 +384,8 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
     // needs no sign-in and says nothing about the list. The one route added to what
     // 1.3.0 served while remote access is off.
     if (p === '/health' && req.method === 'GET') return json(res, 200, health());
+
+    if (host && await viaHost(req, res, ctx, url)) return;
 
     if (ctx.remote) {
       if (p.startsWith('/api/v1/')) return v1(req, res, ctx, url);
@@ -396,7 +473,7 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
   async function routeLocal(req, res, ctx, url) {
     const p = url.pathname;
     if (p === '/health' && req.method === 'GET') return json(res, 200, health());
-    if (p.startsWith('/api/v1/')) return v1(req, res, ctx, url);
+    if (p.startsWith('/api/v1/')) return host ? v1ViaHost(req, res, ctx, url) : v1(req, res, ctx, url);
     return json(res, 404, { error: { code: 'not_found', message: 'No such endpoint.' } });
   }
 
@@ -423,6 +500,11 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
         const { socket } = req;
         res.setHeader('Connection', 'close');
         res.once('finish', () => socket?.destroy());
+      }
+      if (e instanceof HostError) {
+        // The host could not be reached, or turned the request down.
+        const code = e.code === 'unreachable' ? 'host_unreachable' : 'host_refused';
+        return json(res, 502, ctx.local || url.pathname.startsWith('/api/v1/') ? { error: { code, message: e.message } } : { error: e.message, code });
       }
       if (ctx.local || url.pathname.startsWith('/api/v1/')) return v1.fail(res, e);
       if (e instanceof ConflictError) return json(res, 409, { error: e.message, code: 'conflict', current: e.current });

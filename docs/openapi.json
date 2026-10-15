@@ -3,7 +3,7 @@
   "info": {
     "title": "Todos API",
     "version": "1",
-    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**On the Mac itself.** While the app runs, the same API is also served on a Unix domain socket that only your user can open: `~/Library/Application Support/Todos/todos.sock` (or `TODOS_SOCKET`). There it needs no token, and it is there whether Remote Access is on or off. This is how the `todos` command reaches the app. A few operations exist only on the socket, and a few only at the network address; each says so, and is marked `x-todos-only-on` (`socket` or `port`). Where an operation is not served, its path is answered exactly like one that does not exist.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible on the Mac itself: in the app, or from the `todos` command through the local socket (`/tasks/{id}/claude-session`).\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision, and `GET /info` adds how old a client may be. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Habits.** Everything under `/habits` (revision 5). Check-ins are only ever added: a slot checked in twice, by two devices that did not know about each other, keeps both check-ins and counts once, and undoing names the check-ins it removes. Changes to habits are announced on `/events` as `habits`, separately from `change`.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
+    "description": "Read and change the todo list kept by the Todos app on your Mac, from your other devices on your tailnet.\n\nThe API exists only while **Remote Access** is turned on in the app (Todos → Remote Access). Requests reach the Mac through `tailscale serve`, over HTTPS, at the address shown in that menu.\n\n**On the Mac itself.** While the app runs, the same API is also served on a Unix domain socket that only your user can open: `~/Library/Application Support/Todos/todos.sock` (or `TODOS_SOCKET`). There it needs no token, and it is there whether Remote Access is on or off. This is how the `todos` command reaches the app. A few operations exist only on the socket, and a few only at the network address; each says so, and is marked `x-todos-only-on` (`socket` or `port`). Where an operation is not served, its path is answered exactly like one that does not exist.\n\n**Authentication.** Send the access token as `Authorization: Bearer <token>` (Todos → Remote Access → Copy Access Token). Browsers sign in once at /login and use a session cookie instead. Only `GET /health` and `POST /session` work without it.\n\n**Conflicts.** Every task has a `rev` that goes up by one with each change, whoever makes it (this API, the app, or a Claude session). Edits and deletes must name the rev they are based on in `If-Match`. If the task has moved on, you get 409 with the current task and nothing is changed. Adding a comment, adding or checking a subtask, and completing a task need no rev.\n\n**Attribution.** Changes appear in the task's activity as made by you, labelled with the device (from Tailscale). API clients can name themselves with an `X-Todos-Client` header, e.g. `X-Todos-Client: iOS Shortcut`.\n\n**Not available here.** Starting a Claude session on a task is only possible on the Mac itself: in the app, or from the `todos` command through the local socket (`/tasks/{id}/claude-session`).\n\n**Claude sessions on another Mac.** A Mac can use another Mac's list instead of its own (Todos → Use Another Mac's List…). Its Claude sessions then change this list through the API, and say so with `X-Todos-Claude-Session`, so their changes are credited to them.\n\n**Retries.** Any change can carry an `Idempotency-Key` header. Sending it again with the same key does nothing the second time, so a client can retry safely after a timeout.\n\n**Compatibility.** `GET /meta` reports the API version and revision, and `GET /info` adds how old a client may be. Nothing is removed or changed within version 1; additions raise the revision.\n\n**Habits.** Everything under `/habits` (revision 5). Check-ins are only ever added: a slot checked in twice, by two devices that did not know about each other, keeps both check-ins and counts once, and undoing names the check-ins it removes. Changes to habits are announced on `/events` as `habits`, separately from `change`.\n\n**Errors** always look like `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`."
   },
   "servers": [
     {
@@ -292,7 +292,7 @@
           "Session"
         ],
         "summary": "What does this server speak?",
-        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`. Revision 3 (Todos 1.6) added the `Idempotency-Key` header on every change, and `at` on `/capture` and `/capture/preview`. Revision 4 added `GET /info` and the local socket.",
+        "description": "For checking compatibility before relying on anything else. Within version 1 things are only ever added, and each addition raises `revision`, so a client needs \"version 1, revision N or later\". Todos 1.4 has no `/meta`: a 404 here means revision 1.\n\nRevision 2 (Todos 1.5) added this endpoint and `version` in `GET /tasks`. Revision 3 (Todos 1.6) added the `Idempotency-Key` header on every change, and `at` on `/capture` and `/capture/preview`. Revision 4 added `GET /info` and the local socket. Revision 5 added habits. Revision 6 added the `X-Todos-Claude-Session` header on every change.",
         "responses": {
           "200": {
             "description": "The API version and revision, and the app that is serving it.",
@@ -834,6 +834,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ]
       }
@@ -934,6 +937,9 @@
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ],
         "requestBody": {
@@ -1398,6 +1404,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ]
       }
@@ -1528,6 +1537,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ]
       }
@@ -1664,6 +1676,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ]
       },
@@ -1750,6 +1765,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ]
       }
@@ -1878,6 +1896,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ]
       }
@@ -2293,6 +2314,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ]
       }
@@ -2656,6 +2680,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ],
         "requestBody": {
@@ -3007,6 +3034,9 @@
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ],
         "requestBody": {
@@ -3433,6 +3463,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ],
         "requestBody": {
@@ -3645,6 +3678,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ],
         "requestBody": {
@@ -3820,6 +3856,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ClaudeSession"
           }
         ],
         "requestBody": {
@@ -4977,6 +5016,17 @@
           "type": "string",
           "pattern": "^[\\w-]{8,64}$"
         }
+      },
+      "ClaudeSession": {
+        "name": "X-Todos-Claude-Session",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "maxLength": 60,
+          "example": "Claude Code · my-repo"
+        },
+        "description": "Sent by the MCP server when a Claude session works on this list from another Mac (one that uses this Mac's list). The change is credited to that session in the task's activity, as it would be had the session run here. Only names that start with \"Claude\" or \"Cowork\" count; anything else is recorded as yours. Like the device labels, it says who did something and grants nothing."
       }
     }
   }
