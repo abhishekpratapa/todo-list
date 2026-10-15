@@ -103,7 +103,7 @@ The token is checked against the Mac before it is kept, and then stored in the i
 
 ### Habits
 
-The **Habits** tab is for routines you check in on: brushing your teeth morning and evening, the gym three times a week. What a habit is, and exactly how streaks, late logging, rest days and pauses work, is in the [main README](../README.md#habits); the Mac keeps the record and works the streaks out. Habits need the Todos on your Mac to speak API revision 5. With an older one the tab says so, and tasks work as before.
+The **Habits** tab is for routines you check in on: brushing your teeth morning and evening, the gym three times a week. What a habit is, and exactly how streaks, late logging, rest days and pauses work, is in the [main README](../README.md#habits); the Mac keeps the record and works the streaks out. Habits need Todos 1.6.2 or later on your Mac (API revision 5). With an older one the tab says so, and tasks work as before.
 
 - **Today.** What is still to do comes first, soonest first, then what is done, then what expects nothing today. Each habit shows its streak (a flame and a number) and a round button for each time of day. **Tap a button to check in; tap it again to take it back.** The tab's badge counts what is left today.
 - **Yesterday.** If yesterday was left unfinished and a streak hangs on it, it is offered at the top, where it can be logged until today ends.

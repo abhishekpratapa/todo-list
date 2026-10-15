@@ -266,7 +266,7 @@ Checking in something that is already done changes nothing and is not an error, 
 
 Streaks are worked out by the app and printed as they are: the numbers here are the ones the Mac window and the iPhone show. Habits are made and edited in the iPhone app; the command lists them, checks them in and rests them.
 
-Habits need a Todos app that speaks API revision 5. With an older one the habit commands say so (exit code 8) and everything else works as before.
+Habits need Todos 1.6.2 or later on the Mac (API revision 5). With an older one the habit commands say so (exit code 8) and everything else works as before.
 
 ### One-line entry
 

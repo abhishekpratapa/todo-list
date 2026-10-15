@@ -200,7 +200,7 @@ Below the tasks the menu lists the [habits](#habits) still to do today, each wit
 
 A habit is a routine you check in on: brushing your teeth morning and evening, the gym three times a week. Unlike a repeating task it leaves nothing behind on the board. It keeps a history of check-ins instead, and a streak worked out from them.
 
-Habits are in the API from revision 5 (`/api/v1/habits`, in [`docs/openapi.json`](docs/openapi.json)). The Mac is where they are kept and where every streak is worked out, so every client shows the same numbers.
+Habits came with Todos 1.6.2, which speaks API revision 5 (`/api/v1/habits`, in [`docs/openapi.json`](docs/openapi.json)). The Mac is where they are kept and where every streak is worked out, so every client shows the same numbers.
 
 ### On the Mac
 
