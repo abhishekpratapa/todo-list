@@ -6,8 +6,10 @@
 // socket open, since that is how the app runs it.
 //
 // Known, intended differences, each checked here rather than ignored:
-//   - GET /api/v1/meta reports API revision 6 instead of 3, and the app's own
+//   - GET /api/v1/meta reports API revision 7 instead of 3, and the app's own
 //     version from package.json instead of 1.6.1.
+//   - GET /api/v1/tasks refuses an unknown `due` just as before, but the message
+//     also names the values revision 7 added (tomorrow, before:, after:).
 //   - The dashboard's page and its script (/, /index.html, /app.js) gained the
 //     Habits section. The stylesheet is untouched: habits have their own.
 //   - The MCP server offers the habit tools after the ones it had, and its
@@ -347,13 +349,18 @@ test('with remote access on, the API, the dashboard and every refusal are what 1
   const expected = await walk(was, ON, 'browser');
   const actual = await walk(now, ON, 'browser');
   same(actual, expected, {
-    // The one intended difference: the API's revision went from 3 to 5.
+    // The API's revision went from 3 to 7.
     'phone: GET /api/v1/meta': (after, earlier) => {
       assert.equal(earlier.body.api.revision, 3);
-      assert.equal(after.body.api.revision, 6);
+      assert.equal(after.body.api.revision, 7);
       assert.equal(earlier.body.app.version, '1.6.1');
       assert.equal(after.body.app.version, JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version);
       assert.deepEqual({ ...after, body: { api: { ...after.body.api, revision: 3 }, app: { ...after.body.app, version: '1.6.1' } } }, earlier);
+    },
+    // Refused the same way; only the message has more to list.
+    'phone: GET /api/v1/tasks?due=sometime': (after, earlier) => {
+      for (const form of ['overdue', 'today', 'week', 'none', 'any', 'YYYY-MM-DD', 'tomorrow', 'before:', 'after:']) assert.ok(after.body.error.message.includes(form), form);
+      assert.deepEqual({ ...after, body: { error: { ...after.body.error, message: earlier.body.error.message } } }, earlier);
     },
   });
   // Enough was exercised for this to mean something.

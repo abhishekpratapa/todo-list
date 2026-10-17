@@ -18,10 +18,11 @@ import path from 'node:path';
 import { clearedCookie, sessionCookie } from './auth.js';
 import { checkIn, createHabit, deleteHabit, getHabit, habitHistory, listHabits, setZone, skipDay, undo, updateHabit } from './habits.js';
 import { RequestError, json, readJson, readJsonOrText } from './http.js';
+import { QueryError, selectTasks, todayView } from './query.js';
 import { parseQuickAdd } from './quickadd.js';
 import {
-  ASSIGNEES, PRIORITIES, ROOT, STATUSES, ConflictError, NotFoundError, TodoError,
-  createTodo, dailySummary, deleteTodo, dueGroups, getTodo, load, sortTodos, summarize, today, updateTodo, withClock, ymd,
+  ROOT, ConflictError, NotFoundError, TodoError,
+  createTodo, dailySummary, deleteTodo, dueGroups, getTodo, load, summarize, today, updateTodo, withClock,
 } from './store.js';
 
 // What GET /meta reports, so a client can check it is compatible before relying on
@@ -35,8 +36,10 @@ import {
 //   5  Habits: everything under /habits, and a `habits` event in the live updates.
 //   6  Todos 1.7. X-Todos-Claude-Session on every change, so a Claude session that reaches this
 //      list from another Mac is credited with what it does.
+//   7  Sorting and more filters on GET /tasks: `sort`, lists of projects and tags, `tagMode`,
+//      and due tomorrow, before: and after:. GET /today.
 export const API_VERSION = 1;
-export const API_REVISION = 6;
+export const API_REVISION = 7;
 const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 // The oldest version of each kind of client that still works with this app. A
@@ -117,15 +120,6 @@ const readLine = (text, at) => {
 
 // ---------- listing ----------
 
-function oneOrMore(q, name, allowed) {
-  const raw = q.get(name);
-  if (raw === null || raw === '') return null;
-  const values = raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-  const bad = values.find((v) => !allowed.includes(v));
-  if (bad) throw new RequestError(400, 'invalid', `Invalid ${name} "${bad}". Expected one of: ${allowed.join(', ')}.`);
-  return values;
-}
-
 function wholeNumber(q, name, fallback, max) {
   const raw = q.get(name);
   if (raw === null || raw === '') return fallback;
@@ -133,50 +127,18 @@ function wholeNumber(q, name, fallback, max) {
   return Math.min(Number(raw), max);
 }
 
+// The filters and sort are query.js's, read as text. Each filter is left out
+// when it isn't given, except status, which is "open" unless it says otherwise.
+const FILTERS = ['priority', 'assignee', 'project', 'tag', 'tagMode', 'due', 'q'];
+
 function listTasks(q) {
-  let statuses = oneOrMore(q, 'status', ['open', 'all', ...STATUSES]) || ['open'];
-  if (statuses.includes('all')) statuses = STATUSES;
-  else if (statuses.includes('open')) statuses = [...new Set([...statuses.filter((s) => s !== 'open'), 'todo', 'in_progress', 'blocked'])];
-  const priorities = oneOrMore(q, 'priority', PRIORITIES);
-  const assignees = oneOrMore(q, 'assignee', ASSIGNEES);
-  const project = q.get('project');
-  const tag = (q.get('tag') || '').replace(/^[#@]/, '').toLowerCase();
-  const words = (q.get('q') || '').toLowerCase().split(/\s+/).filter(Boolean);
-  const due = (q.get('due') || '').toLowerCase();
-  if (due && !['overdue', 'today', 'week', 'none', 'any'].includes(due) && !/^\d{4}-\d{2}-\d{2}$/.test(due)) {
-    throw new RequestError(400, 'invalid', 'Invalid due. Expected overdue, today, week, none, any, or a date (YYYY-MM-DD) to list what is due on or before it.');
-  }
   const limit = wholeNumber(q, 'limit', 200, 500);
   const offset = wholeNumber(q, 'offset', 0, Number.MAX_SAFE_INTEGER);
-
-  const t0 = today();
-  const weekOut = new Date();
-  weekOut.setDate(weekOut.getDate() + 7);
-  const week = ymd(weekOut);
-  const dueOk = (t) => {
-    switch (due) {
-      case '': return true;
-      case 'overdue': return !!t.due && t.due < t0 && t.status !== 'done';
-      case 'today': return t.due === t0;
-      case 'week': return !!t.due && t.due >= t0 && t.due <= week;
-      case 'none': return !t.due;
-      case 'any': return !!t.due;
-      default: return !!t.due && t.due <= due;
-    }
-  };
-
+  const filter = { status: q.get('status') || 'open', ...Object.fromEntries(FILTERS.map((name) => [name, q.get(name)])) };
   const db = load();
-  const all = db.todos;
-  const matching = sortTodos(all.filter((t) =>
-    statuses.includes(t.status)
-    && (!priorities || priorities.includes(t.priority))
-    && (!assignees || assignees.includes(t.assignee))
-    && (project === null || (t.project || '').toLowerCase() === project.toLowerCase())
-    && (!tag || t.tags.includes(tag))
-    && dueOk(t)
-    && words.every((w) => [t.title, t.notes, t.project || '', ...t.tags, ...t.subtasks.map((s) => s.title)].join('\n').toLowerCase().includes(w))));
+  const matching = selectTasks(db.todos, { filter, sort: q.get('sort') }, today());
   // `version` is the list's version, the same number live updates announce.
-  return { tasks: matching.slice(offset, offset + limit).map(brief), total: matching.length, summary: summarize(all), version: db.version };
+  return { tasks: matching.slice(offset, offset + limit).map(brief), total: matching.length, summary: summarize(db.todos), version: db.version };
 }
 
 // The folder a session was started in, as the command-line client reports it:
@@ -342,6 +304,14 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
       const counts = Object.fromEntries(Object.entries(groups).map(([name, list]) => [name, list.length]));
       return json(res, 200, { ...Object.fromEntries(Object.entries(groups).map(([name, list]) => [name, list.map(brief)])), counts, date: today() });
     }],
+    // The Today view (see query.js): what is overdue, then what is due today, each
+    // most important first. Its total is what the Dock badge and the menu bar count.
+    ['GET', '/today', ({ res }) => {
+      const date = today();
+      const { overdue, today: dueToday } = todayView(load().todos, date);
+      const counts = { overdue: overdue.length, today: dueToday.length, total: overdue.length + dueToday.length };
+      return json(res, 200, { overdue: overdue.map(brief), today: dueToday.map(brief), counts, date });
+    }],
     // The counts on the dashboard's tiles, and what the 9 AM notification would say right now.
     ['GET', '/summary', ({ res }) => {
       const { todos } = load();
@@ -425,6 +395,7 @@ export function createV1({ remote, openStream, viaLabel, sessions }) {
     if (e instanceof ConflictError) return error(res, 409, 'conflict', e.message, { current: e.current });
     if (e instanceof NotFoundError) return error(res, 404, 'not_found', e.message);
     if (e instanceof RequestError) return error(res, e.status, e.code, e.message);
+    if (e instanceof QueryError) return error(res, 400, 'invalid', e.message);
     if (e instanceof TodoError) return error(res, 400, e.code || 'invalid', e.message); // habits.js gives some refusals a code of their own
     console.error(e);
     return error(res, 500, 'internal', 'Internal error');

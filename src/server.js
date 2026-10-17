@@ -25,8 +25,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT, DATA_FILE, PORT, TodoError, NotFoundError, ConflictError,
-  load, getTodo, createTodo, updateTodo, deleteTodo, summarize, sortTodos, watchStore,
+  load, getTodo, createTodo, updateTodo, deleteTodo, summarize, watchStore,
 } from './store.js';
+import { sortTasks } from './query.js';
 import { parseQuickAdd } from './quickadd.js';
 import { HabitError, checkIn, habitHistory, habitsState, listHabits, skipDay, undo, updateHabit, watchHabits } from './habits.js';
 import * as habitText from './habit-text.js';
@@ -38,6 +39,7 @@ import { HostError, recordOnHost } from './host.js';
 import { listenOnSocket, socketPath as defaultSocketPath } from './socket.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const QUERY_FILE = path.join(ROOT, 'src', 'query.js');
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -79,7 +81,7 @@ function expandQuick(body) {
 
 function snapshot() {
   const db = load();
-  return { version: db.version, updatedAt: db.updatedAt, todos: sortTodos(db.todos), summary: summarize(db.todos) };
+  return { version: db.version, updatedAt: db.updatedAt, todos: sortTasks(db.todos), summary: summarize(db.todos) };
 }
 
 // Habits as the dashboard shows them: in the order of today's list (to do, done,
@@ -469,6 +471,9 @@ export function startServer({ port = PORT, handoff = null, remote = null, socket
     if (p.startsWith('/api/')) return json(res, 404, { error: 'Not found' });
 
     if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed' });
+    // The rules for filtering and sorting, which the dashboard runs as well. The
+    // page loads the server's own copy, so the two can never disagree.
+    if (p === '/query.js') return sendFile(res, QUERY_FILE);
     const file = path.join(PUBLIC_DIR, p === '/' ? 'index.html' : path.normalize(p));
     if (!file.startsWith(PUBLIC_DIR + path.sep)) return json(res, 404, { error: 'Not found' });
     sendFile(res, file);

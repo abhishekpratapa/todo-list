@@ -186,12 +186,99 @@ test('list, filter and search', async () => {
   }
 });
 
+test('sort, and filters that take several values', async () => {
+  const mk = async (body) => (await api('POST', '/tasks', { body })).body.task;
+  const tag = `s${Date.now()}`; // keeps this test's tasks apart from the others'
+  const food = `${tag}-food`;
+  const baking = `${tag}-baking`;
+  const a = await mk({ title: 'banana split', tags: [tag, food], priority: 'low', due: 'tomorrow', project: 'Kitchen' });
+  const b = await mk({ title: 'Apple crumble', tags: [tag, food, baking], priority: 'high', due: '+5d', project: 'kitchen' });
+  const c = await mk({ title: 'Cherry pie', tags: [tag, baking], due: 'yesterday', project: 'Garden' });
+  const d = await mk({ title: 'date loaf', tags: [tag], priority: 'high' });
+  const e = await mk({ title: 'Eclair', tags: [tag], status: 'done', due: '+10d', project: 'Kitchen' });
+
+  const ids = async (query) => {
+    const res = await api('GET', `/tasks?${query}`);
+    assert.equal(res.status, 200, query);
+    return res.body.tasks.map((t) => t.id);
+  };
+  const want = (...tasks) => tasks.map((t) => t.id);
+
+  assert.deepEqual(await ids(`tag=${tag}`), want(b, d, c, a), 'no sort: the usual order');
+  assert.deepEqual(await ids(`tag=${tag}&sort=default`), want(b, d, c, a));
+  assert.deepEqual(await ids(`tag=${tag}&sort=due`), want(c, a, b, d), 'undated last');
+  assert.deepEqual(await ids(`tag=${tag}&sort=-due`), want(b, a, c, d), 'undated last either way');
+  assert.deepEqual(await ids(`tag=${tag}&sort=priority`), want(b, d, c, a), 'priority ascending: most important first');
+  assert.deepEqual(await ids(`tag=${tag}&sort=title`), want(b, a, c, d), 'titles ignore case');
+  assert.deepEqual(await ids(`tag=${tag}&status=all&sort=project,-priority`), want(c, a, e, b, d), 'projects ignore case; no project last');
+  assert.deepEqual(await ids(`tag=${tag}&status=all&sort=-completed`), want(e, a, b, c, d));
+  assert.deepEqual(await ids(`tag=${tag}&status=all&sort=-id&limit=2&offset=1`), want(d, c), 'limit and offset apply to the sorted list');
+
+  assert.deepEqual(await ids(`tag=${tag}&project=kitchen,GARDEN`), want(b, c, a), 'several projects');
+  assert.deepEqual(await ids(`tag=${tag}&project=garden,`), want(d, c), 'a project, or none');
+  assert.deepEqual(await ids(`tag=${tag}&project=Kitchen`), want(b, a), 'one project, as before');
+  assert.deepEqual(await ids(`tag=${food},${baking}`), want(b, c, a), 'several tags: any of them');
+  assert.deepEqual(await ids(`tag=${food},${baking}&tagMode=any`), want(b, c, a));
+  assert.deepEqual(await ids(`tag=${food},${baking}&tagMode=all`), want(b), 'tagMode=all: every one');
+  assert.deepEqual(await ids(`tag=%23${food}`), want(b, a), 'one tag, with a #, as before');
+  assert.deepEqual(await ids(`tag=${tag}&due=tomorrow`), want(a));
+  assert.deepEqual(await ids(`tag=${tag}&due=${day(1)}`), want(c, a), 'a bare date: on or before it, as before');
+  assert.deepEqual(await ids(`tag=${tag}&due=before:${day(1)}`), want(c), 'before: leaves that day out');
+  assert.deepEqual(await ids(`tag=${tag}&status=all&due=after:${day(1)}`), want(b, e), 'after: leaves that day out');
+
+  for (const bad of ['sort=dew', 'sort=due,-nope', 'sort=-default', 'tagMode=some', 'due=before:soon', 'due=after:', 'priority=high,urgent']) {
+    const res = await api('GET', `/tasks?${bad}`);
+    assert.equal(res.status, 400, bad);
+    assert.equal(res.body.error.code, 'invalid', bad);
+  }
+  const refused = await api('GET', '/tasks?sort=dew');
+  assert.match(refused.body.error.message, /Unknown sort key "dew"\. Sort by any of: default, status, priority, due, created, updated, completed, title, project, id\./);
+});
+
+test('today: what is overdue, then what is due today, each most important first', async () => {
+  const mk = async (body) => (await api('POST', '/tasks', { body })).body.task;
+  const tag = `t${Date.now()}`;
+  const late = await mk({ title: 'Late, and low', tags: [tag], priority: 'low', due: day(-1) });
+  const later = await mk({ title: 'Late, and high', tags: [tag], priority: 'high', due: day(-1) });
+  const oldest = await mk({ title: 'Late the longest', tags: [tag], priority: 'high', due: day(-5), status: 'blocked' });
+  const busy = await mk({ title: 'Today, under way', tags: [tag], due: day(0), status: 'in_progress' });
+  const urgent = await mk({ title: 'Today, high', tags: [tag], priority: 'high', due: day(0) });
+  await mk({ title: 'Finished late', tags: [tag], due: day(-2), status: 'done' });
+  await mk({ title: 'Tomorrow', tags: [tag], due: day(1) });
+
+  const res = await api('GET', '/today');
+  assert.equal(res.status, 200);
+  assert.deepEqual(Object.keys(res.body), ['overdue', 'today', 'counts', 'date']);
+  const mine = (list) => list.filter((t) => t.tags.includes(tag)).map((t) => t.id);
+  assert.deepEqual(mine(res.body.overdue), [oldest.id, later.id, late.id], 'by priority, then oldest first, whatever the status');
+  assert.deepEqual(mine(res.body.today), [urgent.id, busy.id]);
+  assert.equal(res.body.date, store.today());
+  assert.equal('activity' in res.body.today[0], false, 'tasks in the same shape as /due');
+  assert.equal(typeof res.body.today[0].comments, 'number');
+
+  // The same tasks as the menu bar's first two groups, and the count the Dock badge shows.
+  const id = (t) => t.id;
+  const groups = store.dueGroups(store.load().todos);
+  assert.deepEqual(res.body.overdue.map(id).sort(), groups.overdue.map(id).sort());
+  assert.deepEqual(res.body.today.map(id).sort(), groups.today.map(id).sort());
+  const counts = store.summarize(store.load().todos);
+  assert.deepEqual(res.body.counts, { overdue: counts.overdue, today: counts.due_today, total: counts.overdue + counts.due_today });
+  assert.ok(res.body.counts.overdue >= 3 && res.body.counts.today >= 2);
+
+  // Built from the same filters and sort as the list itself.
+  for (const name of ['overdue', 'today']) {
+    const listed = await api('GET', `/tasks?due=${name}&sort=priority,due&limit=500`);
+    assert.deepEqual(res.body[name].map(id), listed.body.tasks.map(id), name);
+  }
+});
+
 test('meta says what the server speaks, so a client can check before relying on it', async () => {
   const { version } = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
   const res = await api('GET', '/meta');
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, { api: { version: 1, revision: API_REVISION }, app: { name: 'Todos', version } });
   assert.ok(API_REVISION >= 2, 'revision 1 is Todos 1.4, which has no /meta');
+  assert.ok(API_REVISION >= 7, 'sorting, filters with several values and /today came in revision 7');
 
   // Unlike the health check, it needs the token.
   assert.equal((await s.tailnet('GET', '/api/v1/meta')).status, 401);

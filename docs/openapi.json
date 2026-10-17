@@ -488,7 +488,7 @@
           "Tasks"
         ],
         "summary": "List, filter and search tasks",
-        "description": "Sorted like the dashboard: in progress, blocked, to do, then done; within each by priority, then due date. Tasks in a list leave out their activity log and carry a `comments` count instead.",
+        "description": "Values given for one filter are alternatives (`priority=high,medium` is high or medium); different filters must all match. In the list's usual order unless `sort` says otherwise: in progress, blocked, to do, then done; open tasks by priority, then due date (undated last); done tasks by most recently finished. The same rules decide what the dashboard, the `todos` command and the iPhone app list. Tasks in a list leave out their activity log and carry a `comments` count instead.",
         "parameters": [
           {
             "name": "status",
@@ -512,7 +512,21 @@
             "in": "query",
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "Tags, separated by commas, with or without a leading # or @. A task matches if it has any of them, or every one of them with `tagMode=all`. Several tags added in revision 7."
+          },
+          {
+            "name": "tagMode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "any",
+                "all"
+              ],
+              "default": "any"
+            },
+            "description": "Whether a task needs any of the tags in `tag`, or all of them. Added in revision 7."
           },
           {
             "name": "project",
@@ -520,18 +534,15 @@
             "schema": {
               "type": "string"
             },
-            "description": "Exact project name, ignoring case. An empty value lists tasks with no project."
+            "description": "Project names, ignoring case, separated by commas. An empty value, or an empty entry as in `work,`, means no project. A name that has a comma in it still matches as a whole. Several projects added in revision 7."
           },
           {
             "name": "assignee",
             "in": "query",
             "schema": {
-              "type": "string",
-              "enum": [
-                "me",
-                "claude"
-              ]
-            }
+              "type": "string"
+            },
+            "description": "me or claude. Both can be given, separated by commas."
           },
           {
             "name": "due",
@@ -539,7 +550,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "overdue, today, week (today through the next 7 days), none (no due date), any (has one), or a date YYYY-MM-DD for everything due on or before it."
+            "description": "overdue (open, and due before today), today, tomorrow, week (today through the next 7 days), none (no due date), any (has one), before:YYYY-MM-DD or after:YYYY-MM-DD (that day left out), or a date YYYY-MM-DD for everything due on or before it. tomorrow, before: and after: added in revision 7."
           },
           {
             "name": "q",
@@ -548,6 +559,16 @@
               "type": "string"
             },
             "description": "Words that must all appear in the title, notes, project, tags or subtasks."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "default",
+              "example": "due,-priority"
+            },
+            "description": "Keys separated by commas, each ascending unless it starts with -: status (in progress, blocked, to do, done), priority (ascending is high first, so the most important come first), due, created, updated, completed, title (ignoring case), project, id. A task with nothing to sort by, such as no due date or no project, comes last whichever way the key runs. Ties go to the lower id, so the order is the same every time. `default`, or leaving it out, is the usual order described above, and can follow other keys. An unknown key is refused with 400, naming the valid ones. Added in revision 7."
           },
           {
             "name": "limit",
@@ -2483,6 +2504,79 @@
                       "type": "object",
                       "additionalProperties": {
                         "type": "integer"
+                      }
+                    },
+                    "date": {
+                      "type": "string",
+                      "description": "Today on the Mac, YYYY-MM-DD."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the access token is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused before authentication: wrong Host, cross-site Origin, a Tailscale account other than the owner's, or Tailscale Funnel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/today": {
+      "get": {
+        "tags": [
+          "Overview"
+        ],
+        "summary": "Today",
+        "description": "Open tasks that are overdue, then those due today, each group most important first, then oldest first. The same as `GET /tasks?due=overdue&sort=priority,due` and `GET /tasks?due=today&sort=priority,due`, together. `counts.total` is what the Mac's Dock badge and menu bar count. Added in revision 7.",
+        "responses": {
+          "200": {
+            "description": "The two groups, with how many are in each.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "overdue": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskSummary"
+                      }
+                    },
+                    "today": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskSummary"
+                      }
+                    },
+                    "counts": {
+                      "type": "object",
+                      "properties": {
+                        "overdue": {
+                          "type": "integer"
+                        },
+                        "today": {
+                          "type": "integer"
+                        },
+                        "total": {
+                          "type": "integer"
+                        }
                       }
                     },
                     "date": {

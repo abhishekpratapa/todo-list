@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_SORT, selectTasks, sortTasks, todayView } from './query.js';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -625,60 +626,37 @@ export function deleteTodo(id, { ifRev } = {}) {
 
 // ---------- queries ----------
 
-const STATUS_ORDER = { in_progress: 0, blocked: 1, todo: 2, done: 3 };
-const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
-
-export function sortTodos(list) {
-  return [...list].sort((a, b) => {
-    if (a.status !== b.status) return STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-    if (a.status === 'done') return (b.completedAt || '').localeCompare(a.completedAt || '');
-    if (a.priority !== b.priority) return PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-    if (a.due !== b.due) return !a.due ? 1 : !b.due ? -1 : a.due.localeCompare(b.due);
-    return a.id - b.id;
-  });
-}
-
-// filters: { status: 'open'|'all'|'done'|<status>|[statuses], project, tag, assignee, query, overdue, limit }
+// What to list and in what order is decided in query.js, the same rules the
+// dashboard and the API use.
+// filters: { status: 'open'|'all'|'done'|<status>|[statuses], project, tag, assignee, query, overdue, sort, limit }
 export function listTodos(filters = {}) {
   const db = load();
-  const { project, tag, assignee, query } = filters;
-  let statuses;
   const s = filters.status ?? 'open';
-  if (s === 'all') statuses = STATUSES;
-  else if (s === 'open') statuses = ['todo', 'in_progress', 'blocked'];
-  else statuses = (Array.isArray(s) ? s : [s]).map((x) => oneOf('status', x, STATUSES));
-
-  const t0 = today();
-  let list = db.todos.filter((t) => statuses.includes(t.status));
-  if (project) list = list.filter((t) => (t.project || '').toLowerCase() === String(project).toLowerCase());
-  if (tag) list = list.filter((t) => t.tags.includes(String(tag).replace(/^[#@]/, '').toLowerCase()));
-  if (assignee) {
-    const a = oneOf('assignee', assignee, ASSIGNEES);
-    list = list.filter((t) => t.assignee === a);
-  }
-  if (query) {
-    const q = String(query).toLowerCase();
-    list = list.filter((t) => [t.title, t.notes, ...t.subtasks.map((x) => x.title)].join('\n').toLowerCase().includes(q));
-  }
-  if (filters.overdue) list = list.filter((t) => t.due && t.due < t0 && t.status !== 'done');
-  list = sortTodos(list);
-  const total = list.length;
-  if (filters.limit) list = list.slice(0, Number(filters.limit));
-  return { todos: list, total, summary: summarize(db.todos) };
+  const status = s === 'all' || s === 'open' ? s : (Array.isArray(s) ? s : [s]).map((x) => oneOf('status', x, STATUSES));
+  const filter = {
+    status,
+    project: filters.project || null,
+    tag: filters.tag,
+    assignee: filters.assignee ? oneOf('assignee', filters.assignee, ASSIGNEES) : null,
+    q: filters.query,
+    due: filters.overdue ? 'overdue' : null,
+  };
+  const list = selectTasks(db.todos, { filter, sort: filters.sort }, today());
+  return { todos: filters.limit ? list.slice(0, Number(filters.limit)) : list, total: list.length, summary: summarize(db.todos) };
 }
 
 // Open todos grouped by when they are due. The menu bar item shows the first four
-// groups; the API returns all five.
+// groups; the API returns all five. The first two are the Today view's (see
+// query.js), here in the list's usual order.
 export function dueGroups(todos) {
   const t0 = today();
-  const weekOut = new Date();
-  weekOut.setDate(weekOut.getDate() + 7);
-  const week = ymd(weekOut);
-  const open = sortTodos(todos.filter((t) => t.status !== 'done'));
+  const week = addDays(7);
+  const open = sortTasks(todos.filter((t) => t.status !== 'done'));
   const byDue = (a, b) => a.due.localeCompare(b.due);
+  const now = todayView(todos, t0, DEFAULT_SORT);
   return {
-    overdue: open.filter((t) => t.due && t.due < t0),
-    today: open.filter((t) => t.due === t0),
+    overdue: now.overdue,
+    today: now.today,
     upcoming: open.filter((t) => t.due && t.due > t0 && t.due <= week).sort(byDue), // the next 7 days
     undated: open.filter((t) => !t.due),
     later: open.filter((t) => t.due && t.due > week).sort(byDue),
@@ -698,16 +676,18 @@ export function dailySummary(todos) {
   return { title, body: tasks.slice(0, 4).map((t) => t.title).join(', ') + more, tasks };
 }
 
+// The tiles' counts. Overdue and due today are the Today view's two groups, so
+// the Dock badge and the menu bar count exactly what that view lists.
 export function summarize(todos) {
-  const t0 = today();
   const weekAgo = new Date(Date.now() - 7 * 864e5).toISOString();
   const open = todos.filter((t) => t.status !== 'done');
+  const now = todayView(todos, today());
   return {
     open: open.length,
     in_progress: open.filter((t) => t.status === 'in_progress').length,
     blocked: open.filter((t) => t.status === 'blocked').length,
-    overdue: open.filter((t) => t.due && t.due < t0).length,
-    due_today: open.filter((t) => t.due === t0).length,
+    overdue: now.overdue.length,
+    due_today: now.today.length,
     claude: open.filter((t) => t.assignee === 'claude').length,
     done_7d: todos.filter((t) => t.status === 'done' && t.completedAt >= weekAgo).length,
   };
