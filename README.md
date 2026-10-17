@@ -153,7 +153,22 @@ curl -sS https://your-mac.your-tailnet.ts.net/api/v1/capture \
 
 `docs/openapi.json` documents every endpoint under `/api/v1`: tasks (list, filter, search, create, edit, complete, delete), subtasks, comments, history, quick capture, what's due, the daily summary, habits (see [Habits](#habits)), and live updates. Send the access token as `Authorization: Bearer …`.
 
-`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3; the release with the `todos` command is revision 4 (`/info`, and the API on the local socket); habits are revision 5 (everything under `/habits`, and a `habits` live update).
+`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3; the release with the `todos` command is revision 4 (`/info`, and the API on the local socket); habits are revision 5 (everything under `/habits`, and a `habits` live update); Todos 1.7 is revision 6 (`X-Todos-Claude-Session`); sorting, filters with several values and `/today` are revision 7.
+
+Listing tasks (`GET /api/v1/tasks`) follows the same rules as the dashboard, the `todos` command and the iPhone app, written down once in `src/query.js`:
+
+| Parameter | What it takes |
+| --- | --- |
+| `status` | `open` (the default), `all`, or any of `todo`, `in_progress`, `blocked`, `done` |
+| `priority`, `assignee` | any of `high`, `medium`, `low`; `me`, `claude` |
+| `project` | project names, ignoring case. An empty one means no project: `project=work,` is "work, or none" |
+| `tag`, `tagMode` | tags, with or without `#` or `@`. A task with any of them matches; with `tagMode=all`, only one with every one |
+| `due` | `overdue` (open, and due before today), `today`, `tomorrow`, `week` (today through 7 days out), `none`, `any`, `before:YYYY-MM-DD` or `after:YYYY-MM-DD` (leaving that day out), or a date (due on or before it) |
+| `q` | words that must all appear in the title, notes, project, tags or subtasks |
+| `sort` | keys separated by commas, each reversed by a leading `-`: `default`, `status`, `priority` (ascending is high first), `due`, `created`, `updated`, `completed`, `title`, `project`, `id`. A task with nothing to sort by (no due date, no project) goes last either way, and ties go to the lower id. `default`, or no `sort`, is the usual order: in progress, blocked, to do, done; open tasks by priority, then due date; done tasks most recently finished first |
+| `limit`, `offset` | a page of the result |
+
+Several values in one parameter, separated by commas, mean any of them; different parameters must all match. `GET /api/v1/today` is the Today view: open tasks overdue, then due today, each most important first and then oldest first, with their counts. Its total is the number on the Dock badge.
 
 Any change can carry an `Idempotency-Key` header (8 to 64 letters, digits, hyphens or underscores; a UUID works). Sending the same change again with the same key does nothing the second time and answers with the task as it is now, so a script or app can retry after a timeout without adding a task twice. `/capture` also takes an optional `at`, the moment a line was typed, for lines that reach the Mac later: "tomorrow" is then read from that moment.
 
@@ -222,7 +237,7 @@ The command may also start the app on the Mac over SSH (`ssh your-mac open -g -a
 
 ### Is the app there?
 
-`GET /health` answers `{"status":"ok","appVersion":"…","apiVersion":{"version":1,"revision":5}}` as soon as the server is ready, on the socket and on the port, with no sign-in. It says nothing about your list. `GET /api/v1/info` adds `minClientVersions`, the oldest version of each client (`cli`, `ios`) that still works with this app.
+`GET /health` answers `{"status":"ok","appVersion":"…","apiVersion":{"version":1,"revision":7}}` as soon as the server is ready, on the socket and on the port, with no sign-in. It says nothing about your list. `GET /api/v1/info` adds `minClientVersions`, the oldest version of each client (`cli`, `ios`) that still works with this app.
 
 ```bash
 curl --unix-socket ~/Library/Application\ Support/Todos/todos.sock http://todos/health
@@ -287,7 +302,11 @@ A check-in counts for the date where it was made. Fly east over the date line an
 
 ## Using the app
 
-- **Stat tiles** (Open, Due today, Overdue, With Claude, Done this week) double as filters. Click one to focus on it.
+- **Stat tiles** (Open, Due today, Overdue, With Claude, Done this week) are shortcuts: click one to set the filter it counts, and again to clear it.
+- **Filters**: above the board, **Project**, **Priority** and **Tag** take several values at once (any of them; for tags, every one if you tick **Only tasks with every one**), and **Assignee** and **Due** one each. What is filtered shows as chips under them: click a chip to remove it, or **Clear filters**.
+- **Sort**: by due date, priority, created, updated, completed, title or project, each either way, and then by up to two more. Each column is sorted on its own; **Default** is the usual order.
+- **Today**: switch from **Board** to **Today** (or press `T`) for one list of what is overdue, then what is due today, each most important first. The board's filters and sort don't apply there; the search does. Its count is the Dock badge's.
+- The view, the filters and the sort are remembered on each device (in the browser's storage). The search isn't.
 - **Add bar**: press `⌘N` or `N` and type a task. One-line entry works here too (`Renew passport fri !high #personal`), or pick a project, priority, or due date with the controls. Press Enter to add it.
 - **Board**: drag cards between To do, In progress, Blocked, and Done, or click the circle to complete a task.
 - **Details**: click a card to edit its title, status, priority, assignee, due date, project, tags, and notes. You can also read the activity log and leave comments.
@@ -297,7 +316,7 @@ A check-in counts for the date where it was made. Fly east over the date line an
 - **Reminders**: set **Remind me** to a date and time to get a Mac notification then. If you get your reminders on the iPhone app instead, turn off **Todos → Reminder Notifications on This Mac** so you aren't reminded twice; the reminder still shows in the Todos window. Click the notification to open the task. Reminders missed while the app was closed arrive when it next opens. Reminders only fire while the app is running, so turn on **Launch at Login** if you rely on them.
 - **Daily summary**: at 9 AM (or when the app first opens after that) you get one notification listing what's due today and overdue, which [habits](#habits) today asks for, and any streak that can still be saved by logging yesterday. Turn it off with **Todos → Daily Summary at 9 AM**.
 - **Habits**: a strip above the board, once you have one. See [Habits, on the Mac](#on-the-mac).
-- **Search**: press `⌘F` or `/`. Press `Esc` to close panels.
+- **Search**: press `⌘F` or `/`. Every word has to appear somewhere in a task; `#12` on its own finds task 12. Press `Esc` to close panels.
 - **Live changes**: cards that Claude changes flash briefly. The activity log shows which session made each change, for example "Claude Code · my-repo" or "Cowork".
 - **Dock badge**: shows how many tasks are overdue or due today.
 - **App menu**:
@@ -343,7 +362,8 @@ If you move the app somewhere other than `/Applications`, update both paths.
 
 | Tool | What it does |
 | --- | --- |
-| `todo_list` | List todos with a summary. Filter by status (default: open), project, tag, assignee, text, or overdue. |
+| `todo_list` | List todos with a summary. Filter by status (default: open), project, tag, priority (each one or a list), assignee, text, due (`overdue`, `today`, `tomorrow`, `week`, `before:DATE`...) or overdue, and `sort` (`due,-priority`), as the API does. |
+| `todo_today` | What to work on today: what is overdue, then what is due today, most important first. |
 | `todo_get` | Get one todo with full notes and activity history. |
 | `todo_add` | Add a todo (title, notes, status, priority, due, project, tags, assignee, subtasks, repeat, remind_at). |
 | `todo_update` | Change fields, add / check off / remove subtasks, and/or post a progress `comment`. |
@@ -428,6 +448,8 @@ PATCH  /api/todos/:id      { any of the fields above, comment?, add_subtasks?, c
 DELETE /api/todos/:id
 GET    /api/events         server-sent events; "change" fires on every write to the tasks,
                            "habits" on every write to the habits
+GET    /query.js           the rules for filtering and sorting (src/query.js), which the page
+                           runs on what /api/todos sent
 
 GET    /api/habits                    -> { habits, left, zone, version }; habits are in the order of
                                          today's list, each with `group` (due, done, off) and `text`

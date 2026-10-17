@@ -416,6 +416,16 @@ test('Claude sessions on this Mac work on the host\'s list, and are credited wit
     assert.doesNotMatch((await claude.call('todo_list', { status: 'all' })).text, /This Mac's own task/);
     assert.match((await claude.call('todo_get', { id })).text, /Starting on it/);
 
+    // Sorting, lists and the Today view, on the host's list.
+    const dueNow = Number((await claude.call('todo_add', { title: 'Due on the other Mac', due: 'today', project: 'Elsewhere' })).text.match(/#(\d+)/)[1]);
+    const today = await claude.call('todo_today');
+    assert.equal(today.error, false, today.text);
+    assert.match(today.text, new RegExp(`Due today:\\n(.+\\n)*#${dueNow} \\[To do\\] Due on the other Mac`));
+    const listedThere = await claude.call('todo_list', { project: ['elsewhere', 'nowhere'], sort: '-title' });
+    assert.equal(listedThere.error, false, listedThere.text);
+    assert.match(listedThere.text, new RegExp(`#${dueNow} `));
+    assert.doesNotMatch(listedThere.text, /From Claude on the other Mac/);
+
     const updated = await claude.call('todo_update', { id, status: 'in_progress', assignee: 'claude', check_subtasks: [1], add_subtasks: ['third'], comment: 'Halfway' });
     assert.equal(updated.error, false, updated.text);
     const after = hostTask(id);

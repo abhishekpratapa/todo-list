@@ -628,18 +628,24 @@ export function deleteTodo(id, { ifRev } = {}) {
 
 // What to list and in what order is decided in query.js, the same rules the
 // dashboard and the API use.
-// filters: { status: 'open'|'all'|'done'|<status>|[statuses], project, tag, assignee, query, overdue, sort, limit }
+// filters: { status: 'open'|'all'|'done'|<status>|[statuses], project, tag, tagMode, priority,
+//            assignee, query, due, overdue, sort, limit }
+// project, tag and priority take one value or a list, any of which will do. A
+// project of "" is no filter at all, as it always was here; in a list, it is no project.
 export function listTodos(filters = {}) {
   const db = load();
   const s = filters.status ?? 'open';
   const status = s === 'all' || s === 'open' ? s : (Array.isArray(s) ? s : [s]).map((x) => oneOf('status', x, STATUSES));
+  const several = (v) => (Array.isArray(v) ? v : String(v).split(','));
   const filter = {
     status,
-    project: filters.project || null,
+    project: Array.isArray(filters.project) ? filters.project : filters.project || null,
     tag: filters.tag,
+    tagMode: filters.tagMode,
+    priority: filters.priority ? several(filters.priority).map((p) => oneOf('priority', p, PRIORITIES)) : null,
     assignee: filters.assignee ? oneOf('assignee', filters.assignee, ASSIGNEES) : null,
     q: filters.query,
-    due: filters.overdue ? 'overdue' : null,
+    due: filters.due || (filters.overdue ? 'overdue' : null),
   };
   const list = selectTasks(db.todos, { filter, sort: filters.sort }, today());
   return { todos: filters.limit ? list.slice(0, Number(filters.limit)) : list, total: list.length, summary: summarize(db.todos) };

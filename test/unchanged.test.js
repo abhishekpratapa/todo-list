@@ -12,9 +12,11 @@
 //     also names the values revision 7 added (tomorrow, before:, after:).
 //   - The dashboard's page and its script (/, /index.html, /app.js) gained the
 //     Habits section. The stylesheet is untouched: habits have their own.
-//   - The MCP server offers the habit tools after the ones it had, and its
-//     instructions end with a paragraph about habits. Every tool it had is
-//     described and behaves exactly as before.
+//   - The MCP server offers todo_today and the habit tools after the ones it had,
+//     and its instructions end with a paragraph about habits and one about
+//     todo_today. todo_list takes more arguments (sort, due, lists of projects,
+//     tags and priorities) and says so; every argument it took means what it did,
+//     and every other tool it had is described and behaves exactly as before.
 // What is new (GET /health, GET /api/v1/info, the socket and its routes,
 // everything under /api/v1/habits and /api/habits, and the habit tools) is
 // tested in socket.test.js, claude-session.test.js, habits-api.test.js,
@@ -432,7 +434,7 @@ test('the MCP server says and does what 1.6.1\'s did', { skip }, async () => {
   const was = await converse(oldRoot, messages);
   const now = await converse(REPO, messages);
   assert.equal(now.answers.length, was.answers.length);
-  // The two intended differences: what it says about itself, and the tools it lists.
+  // The intended differences: what it says about itself, and the tools it lists.
   const differences = {
     1: (after, earlier) => {
       assert.ok(after.result.instructions.startsWith(`${earlier.result.instructions}\n- The user also tracks habits here`), 'the instructions it had, then one more paragraph');
@@ -440,8 +442,21 @@ test('the MCP server says and does what 1.6.1\'s did', { skip }, async () => {
     },
     2: (after, earlier) => {
       const had = earlier.result.tools.length;
-      assert.deepEqual(after.result.tools.slice(0, had), earlier.result.tools, 'every tool it had, described as before');
-      assert.ok(after.result.tools.length > had && after.result.tools.slice(had).every((t) => t.name.startsWith('habit_')), 'and after them, only habit tools');
+      const [listNow, ...othersNow] = after.result.tools.slice(0, had);
+      const [listWas, ...othersWas] = earlier.result.tools;
+      assert.deepEqual(othersNow, othersWas, 'every other tool it had, described as before');
+      // todo_list: what it said, and more; every argument it took, taking what it took.
+      assert.equal(listNow.name, 'todo_list');
+      assert.ok(listNow.description.startsWith(listWas.description));
+      for (const [name, was] of Object.entries(listWas.inputSchema.properties)) {
+        const now = listNow.inputSchema.properties[name];
+        assert.ok(now && [].concat(now.type).includes(was.type), `todo_list still takes ${name} as a ${was.type}`);
+        if (was.enum) assert.deepEqual(now.enum, was.enum, name);
+      }
+      assert.deepEqual({ ...listNow, description: listWas.description, inputSchema: listWas.inputSchema }, listWas);
+      // After them, todo_today, then only habit tools.
+      assert.equal(after.result.tools[had].name, 'todo_today');
+      assert.ok(after.result.tools.length > had + 1 && after.result.tools.slice(had + 1).every((t) => t.name.startsWith('habit_')), 'and after it, only habit tools');
     },
   };
   for (let i = 0; i < was.answers.length; i++) {

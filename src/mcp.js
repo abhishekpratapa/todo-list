@@ -12,8 +12,9 @@ import path from 'node:path';
 import readline from 'node:readline';
 import {
   DASHBOARD_URL, STATUS_LABELS, STATUSES, PRIORITIES, ASSIGNEES, REPEATS, REPEAT_LABELS, TodoError,
-  createTodo, updateTodo, deleteTodo, getTodo, listTodos, today, localStamp,
+  createTodo, updateTodo, deleteTodo, getTodo, listTodos, load, today, localStamp,
 } from './store.js';
+import { QueryError, SORT_KEYS, TODAY_VIEW, sortTasks, todayView } from './query.js';
 import { HABIT_COLORS, checkIn, createHabit, deleteHabit, getHabit, habitHistory, listHabits, undo } from './habits.js';
 import * as habitText from './habit-text.js';
 import { createAppClient, hostInUse } from './app-client.js';
@@ -27,7 +28,8 @@ const INSTRUCTIONS = `This is the user's personal todo list. The user and all of
 - A task can have subtasks (a checklist). When you work through a task that has them, check each one off as you finish it.
 - A task can repeat, and can have a reminder time that notifies the user on their Mac. Set these when the user asks ("every Monday", "remind me at 3pm").
 - This list is for the user's real to-dos. Don't add your own step-by-step work items unless the user asks you to.
-- The user also tracks habits here: routines such as brushing their teeth or going to the gym, each with a streak. Use habit_list to see them and how today stands, and habit_log when the user tells you they did one. Don't create or delete a habit unless the user explicitly asks you to.`;
+- The user also tracks habits here: routines such as brushing their teeth or going to the gym, each with a streak. Use habit_list to see them and how today stands, and habit_log when the user tells you they did one. Don't create or delete a habit unless the user explicitly asks you to.
+- When the user asks what to work on today, or what needs doing now, start with todo_today: what is overdue, then what is due today, most important first.`;
 
 // Label for activity entries, e.g. "Claude Code · my-repo".
 let actor = 'Claude';
@@ -105,7 +107,11 @@ function summaryLine(s) {
 
 // This Mac's own list, in its files.
 const here = {
-  listTodos: (args) => listTodos({ limit: 100, ...args }),
+  listTodos: (args) => listTodos({ limit: 100, ...args, tagMode: args.tag_mode }),
+  todayView() {
+    const date = today();
+    return { ...todayView(load().todos, date), date };
+  },
   getTodo: (id) => getTodo(id),
   addTodo: (args) => createTodo(args, actor),
   updateTodo: (id, patch) => updateTodo(id, patch, actor),
@@ -129,9 +135,11 @@ const idOf = (id) => {
 };
 const listArg = (v) => (v === undefined || v === null ? [] : Array.isArray(v) ? v : [v]);
 
+const given = (v) => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length);
+
 // Another Mac's list, through the Todos app on this Mac, which passes it on.
 // Answers in the same shapes as `here`.
-function there(app) {
+function there(app, host) {
   async function call(method, p, body, headers) {
     let res;
     try {
@@ -143,16 +151,33 @@ function there(app) {
     return res.body;
   }
   const overwrite = { 'if-match': '*' }; // as on this Mac, where a session's change is not checked against a revision
+  // Sorting, lists of projects and tags, and the Today view came with API revision 7.
+  const revision = async () => (await call('GET', '/api/v1/meta')).api?.revision ?? 1;
   const list = {
-    async listTodos({ status, project, tag, assignee, query, overdue, limit } = {}) {
+    async listTodos({ status, project, tag, tag_mode: tagMode, priority, assignee, query, due, overdue, sort, limit } = {}) {
+      const several = (v) => (Array.isArray(v) ? v.length > 1 : String(v ?? '').includes(','));
+      // An older Mac would ignore a sort and read a list as one name: it is refused instead.
+      if ((given(sort) || several(project) || several(tag) || given(tagMode) || /^(tomorrow|before:|after:)/i.test(String(due ?? ''))) && (await revision()) < 7) {
+        throw new TodoError(`Sorting, lists of projects or tags, tag_mode and due tomorrow, before: or after: need a newer Todos app on ${host.name}. Update it there; everything else works as it is.`);
+      }
       const q = new URLSearchParams({ status: status || 'open', limit: String(limit || 100) });
-      if (project) q.set('project', project);
-      if (tag) q.set('tag', tag);
+      const text = (v) => [].concat(v).join(',');
+      if (Array.isArray(project) ? given(project) : project) q.set('project', text(project));
+      if (given(tag)) q.set('tag', text(tag));
+      if (given(tagMode)) q.set('tagMode', tagMode);
+      if (given(priority)) q.set('priority', text(priority));
       if (assignee) q.set('assignee', assignee);
       if (query) q.set('q', query);
-      if (overdue) q.set('due', 'overdue');
+      if (due || overdue) q.set('due', due || 'overdue');
+      if (given(sort)) q.set('sort', sort);
       const { tasks, total, summary } = await call('GET', `/api/v1/tasks?${q}`);
       return { todos: tasks, total, summary };
+    },
+    async todayView() {
+      if ((await revision()) >= 7) return call('GET', '/api/v1/today');
+      // An older Mac has the same two groups in /due, in the list's usual order.
+      const due = await call('GET', '/api/v1/due');
+      return { overdue: sortTasks(due.overdue, TODAY_VIEW.sort), today: sortTasks(due.today, TODAY_VIEW.sort), date: due.date };
     },
     getTodo: async (id) => (await call('GET', `/api/v1/tasks/${idOf(id)}`)).task,
     async addTodo(args) {
@@ -209,7 +234,7 @@ async function theList() {
   if (!(await app.ready())) {
     throw new TodoError(`This Mac uses the todo list on ${host.name}, through the Todos app, which isn't running and couldn't be started. Open Todos on this Mac and try again.`);
   }
-  return there(app);
+  return there(app, host);
 }
 
 // ---------- tools ----------
@@ -232,16 +257,20 @@ const TOOLS = [
   {
     name: 'todo_list',
     title: 'List todos',
-    description: 'List the user\'s todos with a summary (open, overdue, due today...). By default shows open items (to do, in progress, blocked), sorted by status, then priority, then due date.',
+    description: 'List the user\'s todos with a summary (open, overdue, due today...). By default shows open items (to do, in progress, blocked), sorted by status, then priority, then due date. project, tag and priority take a list as well as one value: a todo with any of them matches. For what to work on today, todo_today is quicker.',
     inputSchema: {
       type: 'object',
       properties: {
         status: { type: 'string', enum: ['open', 'all', ...STATUSES], description: 'Default "open" (everything not done).' },
-        project: { type: 'string' },
-        tag: { type: 'string' },
+        project: { type: ['string', 'array'], items: { type: 'string' }, description: 'A project, or a list of them. Case doesn\'t matter. In a list, "" means no project.' },
+        tag: { type: ['string', 'array'], items: { type: 'string' }, description: 'A tag, or a list of them: todos with any of them, or every one with tag_mode "all".' },
+        tag_mode: { type: 'string', enum: ['any', 'all'], description: 'Whether a todo needs any of the tags (the default) or all of them.' },
+        priority: { type: ['string', 'array'], items: { type: 'string', enum: PRIORITIES }, description: 'A priority, or a list of them.' },
         assignee: { type: 'string', enum: ASSIGNEES },
-        query: { type: 'string', description: 'Case-insensitive text search over titles and notes.' },
-        overdue: { type: 'boolean', description: 'Only overdue items.' },
+        query: { type: 'string', description: 'Words that must all appear, ignoring case, in the title, notes, project, tags or subtasks.' },
+        due: { type: 'string', description: 'overdue, today, tomorrow, week (today through 7 days out), none, any, before:YYYY-MM-DD or after:YYYY-MM-DD (leaving that day out), or a date YYYY-MM-DD (due on or before it).' },
+        overdue: { type: 'boolean', description: 'Only overdue items (the same as due "overdue").' },
+        sort: { type: 'string', description: `Keys separated by commas, each ascending unless it starts with -: ${SORT_KEYS.join(', ')}. priority ascending is most important first; todos with no due date or no project go last either way. Example: "due,-priority".` },
         limit: { type: 'integer', minimum: 1, description: 'Max items to return (default 100).' },
       },
     },
@@ -338,6 +367,19 @@ const TOOLS = [
     async run({ id }, list) {
       const t = await list.deleteTodo(id);
       return `Deleted #${t.id} ${t.title}`;
+    },
+  },
+  {
+    name: 'todo_today',
+    title: 'What to do today',
+    description: 'What the user should work on today: open todos that are overdue, then those due today, each most important first and then oldest first. Use it when the user asks what to work on today, what is due, or what needs doing now. It is the Today view of the user\'s Todos app, and its count is the one on the app\'s Dock badge.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    async run(_args, list) {
+      const { overdue, today: dueToday, date } = await list.todayView();
+      if (!overdue.length && !dueToday.length) return `Nothing is overdue or due today (today is ${date}).`;
+      const groups = [['Overdue', overdue], ['Due today', dueToday]].filter(([, tasks]) => tasks.length);
+      return `${overdue.length} overdue · ${dueToday.length} due today  (today is ${date})\n\n${groups.map(([label, tasks]) => `${label}:\n${tasks.map(line).join('\n')}`).join('\n\n')}`;
     },
   },
 ];
@@ -476,7 +518,7 @@ async function handle(msg) {
       try {
         return reply(id, { content: [{ type: 'text', text: await tool.run(params.arguments || {}, await theList()) }] });
       } catch (e) {
-        if (!(e instanceof TodoError)) console.error(e);
+        if (!(e instanceof TodoError || e instanceof QueryError)) console.error(e);
         return reply(id, { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true });
       }
     }

@@ -163,7 +163,7 @@ Run `todos` with no arguments on a terminal:
 todos
 ```
 
-It shows the four columns (To do, In progress, Blocked, Done) with a card for each task: title, priority, due date, project, tags, who has it and checklist progress. The tiles along the top are the dashboard's, and each is a filter. Changes made anywhere else (the app, the iPhone, a Claude session, another terminal) appear by themselves.
+It shows the four columns (To do, In progress, Blocked, Done) with a card for each task: title, priority, due date, project, tags, who has it and checklist progress. The tiles along the top are the dashboard's, and each is a filter; the last, Today, is what is overdue and what is due today together, the number on the Mac's Dock badge. Changes made anywhere else (the app, the iPhone, a Claude session, another terminal) appear by themselves.
 
 Below 80 columns the board becomes a single list grouped by status. From 110 columns, an open task is shown beside the board; on anything narrower it takes the whole screen.
 
@@ -172,7 +172,8 @@ Below 80 columns the board becomes a single list grouped by status. From 110 col
 | `↑` `↓` or `k` `j` | Move between cards |
 | `←` `→` or `h` `l` | Move between columns |
 | `g` `G` | First and last card |
-| `tab` `shift+tab`, or `1`–`5` | Choose a tile: Open, Due today, Overdue, With Claude, Done this week |
+| `tab` `shift+tab`, or `1`–`6` | Choose a tile: Open, Due today, Overdue, With Claude, Done this week, Today |
+| `o` | Sort each column: by due date, priority, newest first, title, then back to the usual order. The bottom line says which |
 | `/` | Search titles, notes, projects, tags and subtasks. `enter` keeps the filter, `esc` clears it |
 | `enter` | Open the task: notes, subtasks, comments, history, repeat and reminder |
 | `esc` | Back; clear the search or the filter |
@@ -227,8 +228,9 @@ A task is named by its number (`12` or `#12`) or by words from its title (`todos
 |---|---|
 | `todos` | The interactive board on a terminal; `todos ls` when piped. |
 | `todos add "<line>"` | Add a task from one line (see below). No line: a short form. `-`: one task per line of standard input. |
-| `todos ls` | List open tasks. `--status`, `--all`, `--tag`, `--project`, `--priority`, `--assignee`, `--due today\|week\|overdue\|none\|any\|DATE`, `--search`, `--limit`. |
+| `todos ls` | List open tasks. `--status`, `--all`, `--tag`, `--tag-mode`, `--project`, `--priority`, `--assignee`, `--due`, `--search`, `--sort`, `--limit`; see [Listing and sorting](#listing-and-sorting). |
 | `todos due` | What the Mac's menu bar shows: overdue, today, the next 7 days, no date. |
+| `todos today` | What needs doing today: overdue, then due today, each most important first. The app's Today view. |
 | `todos show <task>` | Everything about one task. Notes are rendered on a terminal. |
 | `todos done <task>…` | Mark done. `-m "comment"`. A repeating task gets its next occurrence. |
 | `todos start <task>…` | Move to In progress. |
@@ -249,6 +251,34 @@ A task is named by its number (`12` or `#12`) or by words from its title (`todos
 | `todos version`, `todos completion <shell>` | |
 
 Every command takes `--profile NAME`, `--json`, `--no-color` and `--no-input`. `todos <command> --help` has the details and examples.
+
+### Listing and sorting
+
+`todos ls` lists open tasks in the app's usual order: in progress, blocked, to do, then done; within those by priority, then due date. Filters narrow it. Several values in one, separated by commas, mean any of them, and different filters must all match.
+
+| Flag | What it takes |
+|---|---|
+| `--status` | `open` (the default), `all`, or any of `todo`, `in_progress`, `blocked`, `done`. `--all` is `--status all` |
+| `--priority`, `--assignee` | any of `high`, `medium`, `low`; `me`, `claude` |
+| `--project` | project names, ignoring case. `""` is tasks with no project, and `--project work,` is "work, or none" |
+| `--tag`, `--tag-mode all` | tags: tasks with any of them, or with `--tag-mode all` every one |
+| `--due` | `overdue`, `today`, `tomorrow`, `week` (today through 7 days out), `none`, `any`, `before:DATE` or `after:DATE` (leaving that day out), or a date (due on or before it) |
+| `--search`, `-s` | words that must all appear in the title, notes, project, tags or subtasks |
+| `--sort` | keys separated by commas, each reversed by a leading `-`: `default`, `status`, `priority` (high first), `due`, `created`, `updated`, `completed`, `title`, `project`, `id`. A task with nothing to sort by (no due date, say) comes last either way |
+
+```bash
+todos ls --sort due,-priority
+```
+
+```bash
+todos ls --project work,home --tag errand,bank --tag-mode all --due before:2026-11-01
+```
+
+A mistyped sort key is said at once, with the keys there are, before anything is asked of the Mac. To sort the same way every time, put `"sort": "due,-priority"` in `~/.config/todos/config.json`; `--sort` wins over it.
+
+`todos today` is the app's Today view: open tasks that are overdue, then the ones due today, each most important first and then oldest first.
+
+Sorting, lists of projects and tags, `--tag-mode` and `--due tomorrow`, `before:` and `after:` need Todos with API revision 7 on the Mac. With an older one, a listing that asks for them says so (exit code 8) rather than leaving them out; everything else works as it did, and `todos today` works too, from what the Mac's menu bar shows.
 
 ### Habits
 
@@ -368,6 +398,7 @@ todos habit | awk -F'\t' '$2 == "due" { print $5 }'
 |---|---|
 | `ls` | `{"tasks": [TaskSummary], "total": n, "summary": Counts, "version": n}` |
 | `due` | `{"overdue": [], "today": [], "upcoming": [], "undated": [], "later": [], "counts": {}, "date": "YYYY-MM-DD"}` |
+| `today` | `{"overdue": [], "today": [], "counts": {"overdue": n, "today": n, "total": n}, "date": "YYYY-MM-DD"}` |
 | `show` | `{"task": Task}` |
 | `add` | `{"task": Task, "next": null, "parsed": {"title": "", "fields": {}}}` |
 | `done` `start` `block` `reopen` `edit` `sub` `comment` | `{"task": Task, "next": Task or null}` (`next` is the new occurrence of a repeating task) |
