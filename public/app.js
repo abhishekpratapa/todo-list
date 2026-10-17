@@ -1,5 +1,7 @@
 import { render as renderMarkdown, inline as inlineMarkdown } from '/markdown.js';
 import { createHabits } from '/habits.js';
+import { createListControls } from '/lists.js';
+import { TODAY_VIEW, matches, parseFilter, sortTasks, todayView } from '/query.js';
 
 const STATUSES = [
   { key: 'todo', label: 'To do' },
@@ -26,9 +28,6 @@ const state = {
   todos: [],
   summary: {},
   version: -1,
-  focus: '',
-  project: null,
-  query: '',
   showAllDone: false,
   openId: null,
   handoff: null, // { target, folders: { project: '~/path' } } when the desktop app can start Claude sessions
@@ -135,6 +134,9 @@ async function api(method, url, body) {
 
 // The Habits strip above the board and the panel a habit opens in (see habits.js).
 const habits = createHabits({ api, toast, esc, closeTask: () => state.openId !== null && closeDrawer() });
+
+// Board or Today, the filters, the sort and the search box (see lists.js).
+const lists = createListControls({ esc, changed: render });
 
 async function refresh() {
   try {
@@ -253,39 +255,35 @@ function connect() {
 
 // ---------- filtering ----------
 
-function matchesQuery(t) {
-  if (!state.query) return true;
-  const hay = [t.title, t.notes, t.project || '', t.tags.join(' '), `#${t.id}`, ...t.subtasks.map((sub) => sub.title)].join('\n').toLowerCase();
-  return state.query.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
+// What to show is decided by /query.js, the rules the server and the other
+// clients use. The search box adds one thing of its own: "#12" finds task 12.
+function searched(list) {
+  const q = lists.query();
+  const words = parseFilter({ q });
+  const id = Number(/^#(\d+)$/.exec(q)?.[1]);
+  return list.filter((t) => t.id === id || matches(t, words, todayStr()));
 }
 
-function matchesFocus(t) {
-  const t0 = todayStr();
-  switch (state.focus) {
-    case 'today': return t.status !== 'done' && t.due === t0;
-    case 'overdue': return t.status !== 'done' && !!t.due && t.due < t0;
-    case 'claude': return t.status !== 'done' && t.assignee === 'claude';
-    case 'done': return t.status === 'done' && Date.now() - Date.parse(t.completedAt) < WEEK_MS;
-    default: return true;
-  }
-}
-
+// The board: the filters, then the search.
 function visibleTodos() {
-  return state.todos.filter((t) =>
-    (state.project === null || (t.project || '') === state.project) && matchesQuery(t) && matchesFocus(t));
+  const { q, ...filter } = lists.filter();
+  const f = parseFilter(filter);
+  return searched(state.todos.filter((t) => matches(t, f, todayStr())));
 }
 
 // ---------- rendering ----------
 
 function render() {
   renderStats();
-  renderFilters();
+  renderLists();
   renderBoard();
   renderDrawer();
 }
 
+// Each tile is a shortcut to the filter it counts (see lists.js).
 function renderStats() {
   const s = state.summary;
+  const active = lists.view === 'board' ? lists.tile() : null;
   const tiles = [
     { focus: '', num: s.open ?? 0, label: 'Open' },
     { focus: 'today', num: s.due_today ?? 0, label: 'Due today' },
@@ -294,34 +292,14 @@ function renderStats() {
     { focus: 'done', num: s.done_7d ?? 0, label: 'Done this week' },
   ];
   $('#stats').innerHTML = tiles.map((x) => `
-    <button class="stat${state.focus === x.focus ? ' active' : ''}${x.alert ? ' alert' : ''}" data-focus="${x.focus}" aria-pressed="${state.focus === x.focus}">
+    <button class="stat${active === x.focus ? ' active' : ''}${x.alert ? ' alert' : ''}" data-focus="${x.focus}" aria-pressed="${active === x.focus}">
       <span class="num">${x.num}</span>
       <span class="lbl"><i></i>${x.label}</span>
     </button>`).join('');
 }
 
-function renderFilters() {
-  const counts = new Map();
-  for (const t of state.todos) {
-    if (t.status === 'done') continue;
-    const p = t.project || '';
-    counts.set(p, (counts.get(p) || 0) + 1);
-  }
-  // Keep a filter pill for the selected project even if all its items are done.
-  if (state.project !== null && !counts.has(state.project)) counts.set(state.project, 0);
-  const projects = [...counts.keys()].filter(Boolean).sort((a, b) => a.localeCompare(b));
-  const pills = [`<button class="pill${state.project === null ? ' active' : ''}" data-project="__all">All projects</button>`];
-  for (const p of projects) {
-    pills.push(`<button class="pill${state.project === p ? ' active' : ''}" data-project="${esc(p)}">${esc(p)} <span class="count">${counts.get(p)}</span></button>`);
-  }
-  if (counts.has('') && projects.length) {
-    pills.push(`<button class="pill${state.project === '' ? ' active' : ''}" data-project="">No project <span class="count">${counts.get('')}</span></button>`);
-  }
-  if (state.focus || state.query || state.project !== null) {
-    pills.push('<button class="pill clear" data-clear>Clear filters</button>');
-  }
-  $('#filters').innerHTML = projects.length || state.focus || state.query ? pills.join('') : '';
-
+function renderLists() {
+  lists.render({ todos: state.todos, summary: state.summary });
   const all = [...new Set(state.todos.map((t) => t.project).filter(Boolean))].sort();
   $('#project-list').innerHTML = all.map((p) => `<option value="${esc(p)}"></option>`).join('');
 }
@@ -339,12 +317,16 @@ function remindChip(t) {
   return `<span class="chip${late ? ' overdue' : ''}" title="Reminder: ${esc(new Date(t.remindAt).toLocaleString())}">${ICONS.bell}${esc(remindText(t.remindAt))}</span>`;
 }
 
-function cardHtml(t) {
+// `listed`: a row in the Today list, which has no status columns, so the card
+// says itself when a task is under way or stuck, and can't be dragged anywhere.
+function cardHtml(t, { listed = false } = {}) {
   const last = t.activity[t.activity.length - 1];
   const comments = t.activity.filter((a) => a.kind === 'comment').length;
   const flash = state.flash.has(t.id);
 
   const chips = [
+    listed && t.status === 'in_progress' ? '<span class="chip under-way">In progress</span>' : '',
+    listed && t.status === 'blocked' ? '<span class="chip stuck">Blocked</span>' : '',
     t.priority === 'high' ? '<span class="chip prio-high">High</span>' : '',
     t.priority === 'low' ? '<span class="chip prio-low">Low</span>' : '',
     dueChip(t),
@@ -358,7 +340,7 @@ function cardHtml(t) {
 
   return `
     <article class="card prio-${t.priority}${t.status === 'done' ? ' done' : ''}${state.openId === t.id ? ' selected' : ''}${flash ? ' flash' : ''}"
-             draggable="${CAN_DRAG}" data-id="${t.id}" tabindex="0" aria-label="${esc(t.title)}">
+             draggable="${CAN_DRAG && !listed}" data-id="${t.id}" tabindex="0" aria-label="${esc(t.title)}">
       <button class="check" data-check aria-label="${t.status === 'done' ? 'Mark not done' : 'Mark done'}">${ICONS.check}</button>
       <div class="card-title">${esc(t.title)}</div>
       <div class="card-meta">${chips}</div>
@@ -370,11 +352,18 @@ function cardHtml(t) {
 }
 
 function renderBoard() {
+  const today = lists.view === 'today';
+  $('#board').classList.toggle('today-view', today);
+  $('#board').innerHTML = today ? todayHtml() : boardHtml();
+}
+
+// The columns, each in the order the Sort menu says.
+function boardHtml() {
   const list = visibleTodos();
-  $('#board').innerHTML = STATUSES.map(({ key, label }) => {
-    let items = list.filter((t) => t.status === key);
+  return STATUSES.map(({ key, label }) => {
+    let items = sortTasks(list.filter((t) => t.status === key), lists.sort());
     let hidden = 0;
-    if (key === 'done' && !state.showAllDone && state.focus !== 'done') {
+    if (key === 'done' && !state.showAllDone) {
       const recent = items.filter((t) => Date.now() - Date.parse(t.completedAt) < WEEK_MS);
       hidden = items.length - recent.length;
       items = recent;
@@ -383,11 +372,23 @@ function renderBoard() {
     return `
       <div class="column" data-status="${key}">
         <div class="col-head"><span class="dot"></span>${label}<span class="count">${items.length}</span></div>
-        ${items.length ? items.map(cardHtml).join('') : `<div class="empty">${emptyText}</div>`}
+        ${items.length ? items.map((t) => cardHtml(t)).join('') : `<div class="empty">${emptyText}</div>`}
         ${hidden ? `<button class="pill more" data-show-done>Show ${hidden} older</button>` : ''}
         ${key === 'done' && state.showAllDone ? '<button class="pill more" data-hide-done>Show this week only</button>' : ''}
       </div>`;
   }).join('');
+}
+
+// Today: one list, overdue first, then due today, in the view's own order. The
+// board's filters and sort don't apply; the search does.
+function todayHtml() {
+  const groups = todayView(searched(state.todos), todayStr());
+  const html = TODAY_VIEW.groups.map(({ name, label }) => (groups[name].length ? `
+    <section class="today-group" data-group="${name}" aria-label="${label}">
+      <h2 class="today-head"><span class="dot"></span>${label}<span class="count">${groups[name].length}</span></h2>
+      <div class="today-list">${groups[name].map((t) => cardHtml(t, { listed: true })).join('')}</div>
+    </section>` : '')).join('');
+  return html || `<div class="empty today-empty">${lists.query() ? 'Nothing overdue or due today matches the search' : 'Nothing overdue or due today 🎉'}</div>`;
 }
 
 // ---------- drawer ----------
@@ -542,42 +543,22 @@ function saveField(key, raw) {
 
 $('#stats').addEventListener('click', (e) => {
   const tile = e.target.closest('.stat');
-  if (!tile) return;
-  state.focus = state.focus === tile.dataset.focus ? '' : tile.dataset.focus;
-  render();
-});
-
-$('#filters').addEventListener('click', (e) => {
-  const pill = e.target.closest('.pill');
-  if (!pill) return;
-  if (pill.hasAttribute('data-clear')) {
-    state.focus = '';
-    state.project = null;
-    state.query = '';
-    $('#search').value = '';
-  } else {
-    const p = pill.dataset.project;
-    state.project = p === '__all' || state.project === p ? null : p;
-  }
-  render();
-});
-
-$('#search').addEventListener('input', (e) => {
-  state.query = e.target.value.trim();
-  render();
+  if (tile) lists.pickTile(tile.dataset.focus);
 });
 
 $('#quickadd').addEventListener('submit', async (e) => {
   e.preventDefault();
   const title = $('#qa-title').value.trim();
   if (!title) return;
+  // While the board is filtered to one project, or to Claude's tasks, a new task joins them.
+  const { project, assignee } = lists.filter();
   const body = {
     quick: title, // one-line entry: dates, !priority, #project, @tag are parsed on the server
     priority: $('#qa-priority').value,
-    project: $('#qa-project').value.trim() || (state.project || null),
+    project: $('#qa-project').value.trim() || (project.length === 1 && project[0]) || null,
     due: $('#qa-due').value || null,
   };
-  if (state.focus === 'claude') body.assignee = 'claude';
+  if (assignee === 'claude') body.assignee = 'claude';
   try {
     await api('POST', '/api/todos', body);
     $('#qa-title').value = '';
@@ -794,6 +775,7 @@ document.addEventListener('keydown', (e) => {
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
   if (e.key === 'n' || e.key === 'N') { e.preventDefault(); $('#qa-title').focus(); }
+  if (e.key === 't' || e.key === 'T') { e.preventDefault(); lists.toggleView(); }
 });
 
 $('#signout').addEventListener('click', async () => {
