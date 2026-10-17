@@ -278,7 +278,7 @@ A mistyped sort key is said at once, with the keys there are, before anything is
 
 `todos today` is the app's Today view: open tasks that are overdue, then the ones due today, each most important first and then oldest first.
 
-Sorting, lists of projects and tags, `--tag-mode` and `--due tomorrow`, `before:` and `after:` need Todos with API revision 7 on the Mac. With an older one, a listing that asks for them says so (exit code 8) rather than leaving them out; everything else works as it did, and `todos today` works too, from what the Mac's menu bar shows.
+Sorting, lists of projects and tags, `--tag-mode` and `--due tomorrow`, `before:` and `after:` need Todos 1.8 or later on the Mac (API revision 7). With an older one, a listing that asks for them says so (exit code 8) rather than leaving them out; everything else works as it did, and `todos today` works too, from what the Mac's menu bar shows.
 
 ### Habits
 

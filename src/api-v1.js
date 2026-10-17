@@ -36,7 +36,7 @@ import {
 //   5  Habits: everything under /habits, and a `habits` event in the live updates.
 //   6  Todos 1.7. X-Todos-Claude-Session on every change, so a Claude session that reaches this
 //      list from another Mac is credited with what it does.
-//   7  Sorting and more filters on GET /tasks: `sort`, lists of projects and tags, `tagMode`,
+//   7  Todos 1.8. Sorting and more filters on GET /tasks: `sort`, lists of projects and tags, `tagMode`,
 //      and due tomorrow, before: and after:. GET /today.
 export const API_VERSION = 1;
 export const API_REVISION = 7;

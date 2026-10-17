@@ -153,7 +153,7 @@ curl -sS https://your-mac.your-tailnet.ts.net/api/v1/capture \
 
 `docs/openapi.json` documents every endpoint under `/api/v1`: tasks (list, filter, search, create, edit, complete, delete), subtasks, comments, history, quick capture, what's due, the daily summary, habits (see [Habits](#habits)), and live updates. Send the access token as `Authorization: Bearer …`.
 
-`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3; the release with the `todos` command is revision 4 (`/info`, and the API on the local socket); habits are revision 5 (everything under `/habits`, and a `habits` live update); Todos 1.7 is revision 6 (`X-Todos-Claude-Session`); sorting, filters with several values and `/today` are revision 7.
+`GET /api/v1/meta` says which API version and revision the app speaks. Within version 1 things are only added, and each addition raises the revision, so a client can check for "version 1, revision N or later" before relying on something newer. Todos 1.4 has no `/meta` (revision 1); 1.5 is revision 2; 1.6 is revision 3; the release with the `todos` command is revision 4 (`/info`, and the API on the local socket); habits are revision 5 (everything under `/habits`, and a `habits` live update); Todos 1.7 is revision 6 (`X-Todos-Claude-Session`); Todos 1.8 is revision 7 (sorting, filters with several values and `/today`).
 
 Listing tasks (`GET /api/v1/tasks`) follows the same rules as the dashboard, the `todos` command and the iPhone app, written down once in `src/query.js`:
 
