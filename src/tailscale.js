@@ -1,9 +1,11 @@
 // Talks to the Tailscale CLI: reads this Mac's place on the tailnet, and sets up
 // or removes the `tailscale serve` mapping that relays the user's other devices
-// to the local server. Nothing here runs unless remote access is being used.
+// to the local server. Nothing here runs unless remote access, or another Mac's
+// list, is being used.
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const CANDIDATES = ['/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale'];
 // HTTPS ports `tailscale serve` can listen on, in order of preference.
@@ -53,6 +55,37 @@ export async function status() {
     ownerLogin: owner.LoginName || null,
     httpsEnabled: (d.CertDomains || []).length > 0,
   };
+}
+
+// An address in the tailnet's ranges: 100.64.0.0/10, or fd7a:115c:a1e0::/48.
+export function isTailnetAddress(address) {
+  const a = String(address).toLowerCase().replace(/^\[|\]$/g, '');
+  const v4 = a.match(/^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  return v4 ? Number(v4[1]) >= 64 && Number(v4[1]) <= 127 : a.startsWith('fd7a:115c:a1e0:');
+}
+
+// What is wrong with Tailscale on this Mac, by its state in `tailscale status`.
+const NOT_RUNNING = { reason: 'Tailscale isn\'t running on this Mac', fix: 'Open Tailscale and connect, then try again.' };
+const STATES = {
+  Stopped: { reason: 'Tailscale is turned off on this Mac', fix: 'Turn Tailscale on, then try again.' },
+  NeedsLogin: { reason: 'Tailscale on this Mac is signed out', fix: 'Sign in to Tailscale, then try again.' },
+  NeedsMachineAuth: { reason: 'Tailscale on this Mac is waiting to be approved in the tailnet\'s admin console', fix: 'Approve it there, then try again.' },
+  Starting: { reason: 'Tailscale on this Mac is still connecting', fix: 'Try again in a moment.' },
+};
+
+// Why this Mac can't use its tailnet right now, as { reason, fix }, or null when
+// Tailscale looks fine here or there's no telling. When the tailscale command
+// doesn't answer, Tailscale is taken to be off only if no network interface has
+// an address on the tailnet. `interfaces` is for the tests.
+export async function offTailnet({ interfaces = os.networkInterfaces } = {}) {
+  const d = findCli() ? parse((await run(['status', '--json'], 3000)).stdout) : null;
+  if (d?.BackendState) {
+    if (d.BackendState !== 'Running') return STATES[d.BackendState] || NOT_RUNNING;
+    if (d.Self?.Online === false) return { reason: 'Tailscale on this Mac isn\'t connected to the tailnet right now', fix: 'Check that this Mac is online, then try again.' };
+    return null;
+  }
+  const addresses = Object.values(interfaces()).flat().map((i) => i?.address);
+  return addresses.some(isTailnetAddress) ? null : NOT_RUNNING;
 }
 
 // What `tailscale serve` is doing with the local server on `port`:

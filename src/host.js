@@ -7,6 +7,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
+import { isTailnetAddress, offTailnet } from './tailscale.js';
 
 // The oldest API a host may speak: revision 6 accepts X-Todos-Claude-Session, so a
 // Claude session on this Mac is credited with its changes there.
@@ -50,22 +51,42 @@ export const hostName = (url) => (LOOPBACK.has(url.hostname) ? `localhost:${url.
 // What this Mac calls itself in the host's activity log, as its owner named it.
 export const thisMac = () => os.hostname().replace(/\.local$/, '');
 
+// Whether the host is reached over the tailnet: by its MagicDNS name or a tailnet address.
+export const onTailnet = (url) => url.hostname.toLowerCase().endsWith('.ts.net') || isTailnetAddress(url.hostname);
+
 const REQUEST_HEADERS = ['content-type', 'accept', 'if-match', 'idempotency-key', 'x-todos-claude-session'];
 const RESPONSE_HEADERS = ['content-type', 'etag', 'location', 'retry-after', 'allow', 'cache-control'];
 const UNREACHABLE = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ETIMEDOUT', 'EPIPE', 'timeout']);
 
 // The connection to one host.
-//   url      from hostAddress()
-//   token    the host's access token
-//   label    how changes from here are labelled there (this Mac's name)
-export function createHost({ url, token, label = thisMac() }) {
+//   url            from hostAddress()
+//   token          the host's access token
+//   label          how changes from here are labelled there (this Mac's name)
+//   whyOffTailnet  what is wrong with this Mac's own Tailscale, if anything (see
+//                  tailscale.js); asked only for a host on the tailnet
+export function createHost({ url, token, label = thisMac(), whyOffTailnet = onTailnet(url) ? offTailnet : null }) {
   const lib = url.protocol === 'https:' ? https : http;
   const agent = new lib.Agent({ keepAlive: true, maxSockets: 16 });
   const name = hostName(url);
   const listeners = new Set();
   let state = 'unknown'; // 'ok', 'unreachable' or 'unauthorized': how the last answer went
 
-  const unreachable = () => new HostError('unreachable', `Can't reach Todos on ${name}. Check that the Mac is awake, on Tailscale, and running Todos.`);
+  // This Mac's Tailscale, asked at most every few seconds however many requests fail.
+  let asked = null; // { at, why }
+  function tailscaleHere() {
+    if (!whyOffTailnet) return Promise.resolve(null);
+    if (!asked || Date.now() - asked.at > 5000) asked = { at: Date.now(), why: whyOffTailnet().catch(() => null) };
+    return asked.why;
+  }
+
+  // The error for a host that didn't answer. When the connection failed (rather
+  // than dropped partway), it's this Mac's own Tailscale that's blamed if it is
+  // off, signed out or disconnected, and the other Mac otherwise.
+  async function unreachable(e = null) {
+    const why = e && UNREACHABLE.has(e.code) ? await tailscaleHere() : null;
+    if (why) return new HostError('unreachable', `${why.reason}, so Todos on ${name} can't be reached. ${why.fix}`);
+    return new HostError('unreachable', `Can't reach Todos on ${name}. Check that the Mac is awake, on Tailscale, and running Todos.`);
+  }
   const tokenRefused = () => new HostError('token_refused', `Todos on ${name} no longer accepts this Mac's access token. On this Mac, choose Todos → Reconnect to ${name}… and enter its new one.`);
 
   function settle(next) {
@@ -129,11 +150,12 @@ export function createHost({ url, token, label = thisMac() }) {
             }
             resolve({ status: res.statusCode, headers: res.headers, body: parsed });
           });
-          res.on('error', () => reject(unreachable()));
+          res.on('error', () => unreachable().then(reject));
         });
         req.on('error', (e) => {
           if (UNREACHABLE.has(e.code) || /certificate|SSL|TLS/i.test(e.message)) settle('unreachable');
-          reject(UNREACHABLE.has(e.code) ? unreachable() : new HostError('unreachable', `Can't reach Todos on ${name}: ${e.message}`));
+          if (UNREACHABLE.has(e.code)) unreachable(e).then(reject);
+          else reject(new HostError('unreachable', `Can't reach Todos on ${name}: ${e.message}`));
         });
       });
     },
@@ -167,7 +189,9 @@ export function createHost({ url, token, label = thisMac() }) {
       upstream.on('error', (e) => {
         if (UNREACHABLE.has(e.code) || /certificate|SSL|TLS/i.test(e.message)) settle('unreachable');
         if (res.headersSent) return res.destroy(); // a live stream that dropped: the page reconnects by itself
-        refuse(502, 'host_unreachable', unreachable().message);
+        unreachable(e).then((err) => {
+          if (!res.destroyed) refuse(502, 'host_unreachable', err.message);
+        });
       });
       // The page or the command went away before the answer was over: so does the request to the host.
       res.on('close', () => {

@@ -20,7 +20,7 @@ process.env.TODOS_CLAUDE_BIN = STUB;
 process.env.TODOS_HANDOFF_DRY_RUN = '1';
 
 const { startServer } = await import('../src/server.js');
-const { HostError, MIN_HOST_REVISION, createHost, hostAddress, hostName, recordOnHost } = await import('../src/host.js');
+const { HostError, MIN_HOST_REVISION, createHost, hostAddress, hostName, onTailnet, recordOnHost } = await import('../src/host.js');
 const { createHandoff } = await import('../electron/handoff.js');
 const { tildify } = await import('../src/claude-session.js');
 const REPO = path.resolve(import.meta.dirname, '..');
@@ -601,4 +601,34 @@ test('a host is checked before it is used: Todos, letting this Mac in, new enoug
   const nowhere = createHost({ url: hostAddress('http://127.0.0.1:9'), token: 'x' });
   await assert.rejects(nowhere.check(), (e) => e.code === 'unreachable');
   nowhere.close();
+});
+
+test('when it is this Mac\'s own Tailscale that is off, the command is told that, not to go check the other Mac', async () => {
+  let asked = 0;
+  const off = async () => {
+    asked++;
+    return { reason: 'Tailscale is turned off on this Mac', fix: 'Turn Tailscale on, then try again.' };
+  };
+  const nowhere = createHost({ url: hostAddress('http://127.0.0.1:9'), token: 'x', whyOffTailnet: off });
+  await assert.rejects(nowhere.check(), (e) => e.code === 'unreachable' && e.message === 'Tailscale is turned off on this Mac, so Todos on localhost:9 can\'t be reached. Turn Tailscale on, then try again.');
+  const s = await startServer({ port: 0, socketPath: path.join(socketDir, 'offts.sock'), host: nowhere });
+  try {
+    const added = await send(s.socket, 'POST', '/api/v1/tasks', { body: { title: 'While Tailscale is off' }, headers: { host: 'todos' } });
+    assert.equal(added.status, 502);
+    assert.equal(added.body.error.code, 'host_unreachable', 'still the code the command saves changes for later on');
+    assert.match(added.body.error.message, /^Tailscale is turned off on this Mac, so Todos on localhost:9 can't be reached/);
+  } finally {
+    s.close();
+    nowhere.close();
+  }
+  assert.equal(asked, 1, 'Tailscale is asked once for failures that come close together');
+
+  // Tailscale is fine here: the other Mac gets the blame, as before.
+  const fine = createHost({ url: hostAddress('http://127.0.0.1:9'), token: 'x', whyOffTailnet: async () => null });
+  await assert.rejects(fine.check(), (e) => e.message === 'Can\'t reach Todos on localhost:9. Check that the Mac is awake, on Tailscale, and running Todos.');
+  fine.close();
+
+  // Only a host on the tailnet is a reason to ask this Mac's Tailscale.
+  for (const address of ['my-mac.tail1234.ts.net:10000', 'https://My-Mac.Tail1234.TS.NET', 'https://100.108.213.110', 'https://[fd7a:115c:a1e0::454e:d56f]:10000']) assert.equal(onTailnet(hostAddress(address)), true, address);
+  for (const address of ['http://127.0.0.1:9', 'https://todos.example.com', 'https://192.168.1.20:10000']) assert.equal(onTailnet(hostAddress(address)), false, address);
 });

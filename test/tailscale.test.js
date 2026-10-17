@@ -123,6 +123,37 @@ test('device names come from whois, are cached, and only addresses are passed al
   assert.deepEqual(calls(), [], 'nothing that is not an address reaches the command line');
 });
 
+test('says what is wrong with this Mac\'s own Tailscale, and nothing when it is fine', async () => {
+  const before = fs.readFileSync(path.join(dir, 'status.json'), 'utf8');
+  const on = { lo0: [{ address: '127.0.0.1' }], utun4: [{ address: '100.101.102.103' }] };
+  const off = { lo0: [{ address: '127.0.0.1' }], en0: [{ address: '192.168.1.20' }, { address: 'fe80::1' }] };
+  const why = async (status, interfaces = on) => {
+    put('status.json', status);
+    return (await ts.offTailnet({ interfaces: () => interfaces }))?.reason ?? null;
+  };
+  try {
+    assert.equal(await why({ BackendState: 'Running', Self: { Online: true } }), null);
+    assert.equal(await why({ BackendState: 'Running', Self: {} }), null, 'no word on being online is no complaint');
+    assert.match(await why({ BackendState: 'Stopped', Self: {} }), /turned off on this Mac/);
+    assert.match(await why({ BackendState: 'NeedsLogin', Self: {} }), /signed out/);
+    assert.match(await why({ BackendState: 'NeedsMachineAuth', Self: {} }), /approved/);
+    assert.match(await why({ BackendState: 'NoState', Self: {} }), /isn't running on this Mac/);
+    assert.match(await why({ BackendState: 'Running', Self: { Online: false } }), /isn't connected to the tailnet/);
+    // No answer from the command (Tailscale quit, or not there): the interfaces decide.
+    assert.equal(await why('failed to connect to local Tailscale service', on), null, 'an address on the tailnet: no telling');
+    assert.match(await why('failed to connect to local Tailscale service', off), /isn't running on this Mac/);
+    assert.equal(await why('', { utun4: [{ address: 'fd7a:115c:a1e0::644e:9515' }] }), null);
+    assert.match((await ts.offTailnet({ interfaces: () => off })).fix, /try again/);
+  } finally {
+    put('status.json', before);
+  }
+});
+
+test('tells tailnet addresses from others', () => {
+  for (const a of ['100.64.0.1', '100.108.213.110', '100.127.255.254', 'fd7a:115c:a1e0::1', '[fd7a:115c:a1e0::644e:9515]', 'FD7A:115C:A1E0::1']) assert.equal(ts.isTailnetAddress(a), true, a);
+  for (const a of ['100.63.0.1', '100.128.0.1', '10.0.0.5', '127.0.0.1', '192.168.1.20', 'fe80::1', 'fd7a:115c:a1e1::1', 'my-mac.tail1234.ts.net', '']) assert.equal(ts.isTailnetAddress(a), false, a);
+});
+
 test('without the command installed, everything degrades quietly', async () => {
   const saved = process.env.TODOS_TAILSCALE_BIN;
   process.env.TODOS_TAILSCALE_BIN = path.join(dir, 'does-not-exist');
