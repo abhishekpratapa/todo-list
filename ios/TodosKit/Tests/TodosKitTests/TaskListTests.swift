@@ -42,7 +42,7 @@ struct TaskListTests {
     @Test("due today, overdue and with Claude narrow the list like the Mac's tiles")
     func focus() {
         func ids(_ focus: TaskFocus, _ filter: TaskFilter = .open) -> [Int] {
-            tasks.sections(for: TaskQuery(filter: filter, focus: focus), today: today).flatMap(\.tasks).map(\.id)
+            tasks.sections(for: TaskQuery(filter: filter, focus: [focus]), today: today).flatMap(\.tasks).map(\.id)
         }
         #expect(ids(.dueToday) == [7, 1])
         #expect(ids(.overdue) == [3])
@@ -52,7 +52,7 @@ struct TaskListTests {
 
     @Test("projects filter without regard to case, and are listed once each")
     func projects() {
-        #expect(tasks.sections(for: TaskQuery(project: "work"), today: today).flatMap(\.tasks).map(\.id) == [2, 1])
+        #expect(tasks.sections(for: TaskQuery(projects: ["work"]), today: today).flatMap(\.tasks).map(\.id) == [2, 1])
         #expect(tasks.projects == ["Personal", "Work"])
     }
 
@@ -72,7 +72,54 @@ struct TaskListTests {
         #expect(ids("sam") == [4], "subtask titles")
         #expect(ids("").count == 6)
         #expect(TaskQuery(search: "  ").isNarrowed == false)
-        #expect(TaskQuery(search: "x").isNarrowed && TaskQuery(focus: .overdue).isNarrowed && TaskQuery(project: "p").isNarrowed)
+        #expect(TaskQuery(search: "x").isNarrowed && TaskQuery(focus: [.overdue]).isNarrowed && TaskQuery(projects: ["p"]).isNarrowed)
+    }
+
+    @Test("several views, projects, priorities or tags: a task in any of them shows; different kinds must all match")
+    func severalValues() {
+        func ids(_ query: TaskQuery) -> [Int] {
+            tasks.sections(for: query, today: today).flatMap(\.tasks).map(\.id)
+        }
+        #expect(ids(TaskQuery(focus: [.dueToday, .overdue])) == [3, 7, 1], "the Today view's tasks")
+        #expect(ids(TaskQuery(focus: [.withClaude, .overdue])) == [2, 3])
+        #expect(ids(TaskQuery(projects: ["Work", "personal"])) == [2, 3, 1])
+        #expect(ids(TaskQuery(projects: [""])) == [4, 7, 8], "no project")
+        #expect(ids(TaskQuery(priorities: [.high, .low])) == [2, 3, 7, 8, 1])
+        #expect(ids(TaskQuery(projects: ["work"], priorities: [.high])) == [2])
+        var tagged = tasks
+        tagged[2].tags = ["errands", "writing"]
+        func tagIDs(_ query: TaskQuery) -> [Int] { tagged.sections(for: query, today: today).flatMap(\.tasks).map(\.id) }
+        #expect(tagIDs(TaskQuery(tags: ["writing", "errands"])) == [3, 1])
+        #expect(tagIDs(TaskQuery(tags: ["writing", "errands"], tagMode: .all)) == [3])
+        #expect(TaskQuery(priorities: [.low]).isFiltered && !TaskQuery(search: "x").isFiltered)
+    }
+
+    @Test("a sort orders each section on its own")
+    func sortWithinSections() throws {
+        let byDue = tasks.sections(for: TaskQuery(sort: try TaskSort("due")), today: today)
+        #expect(byDue.map(\.status) == [.inProgress, .blocked, .todo], "the sections stay the statuses")
+        #expect(byDue.last?.tasks.map(\.id) == [3, 1, 7, 8], "due first, ties by id, undated last")
+        let byTitle = tasks.sections(for: TaskQuery(filter: .done, sort: try TaskSort("title")), today: today)
+        #expect(byTitle.flatMap(\.tasks).map(\.id) == [5, 6])
+        #expect(tasks.inListOrder().map(\.id) == tasks.sorted(by: .default).map(\.id))
+    }
+
+    @Test("what is kept between launches: everything but the search, read one field at a time")
+    func kept() throws {
+        let query = TaskQuery(filter: .todo, focus: [.overdue], projects: ["Work", ""], priorities: [.high], tags: ["errands"], tagMode: .all,
+                              sort: try TaskSort("due,-priority"), search: "passport")
+        let saved = try JSONEncoder().encode(query)
+        var back = try JSONDecoder().decode(TaskQuery.self, from: saved)
+        #expect(back.search == "", "an old search would hide tasks without saying why")
+        back.search = "passport"
+        #expect(back == query)
+        // A sort key from a later version, and a field that isn't a list: the rest stands.
+        var json = try JSONSerialization.jsonObject(with: saved) as! [String: Any]
+        json["sort"] = "due,urgency"
+        json["projects"] = "Work"
+        let partly = try JSONDecoder().decode(TaskQuery.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(partly.sort.isDefault && partly.projects.isEmpty && partly.filter == .todo && partly.priorities == [.high] && partly.tagMode == .all)
+        #expect(try JSONDecoder().decode(TaskQuery.self, from: Data("{}".utf8)) == TaskQuery())
     }
 
     @Test("counts match the Mac's tiles")

@@ -14,6 +14,9 @@ struct AppModelTests {
     let keychain = KeychainCredentialStore(service: "com.abhishekpratapa.todos.tests.\(UUID().uuidString)")
     let credentials = try! HubCredentials(address: HubAddress("my-mac.tail1234.ts.net"), token: "test-token-\(UUID().uuidString)")
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("todos-app-tests-\(UUID().uuidString)", isDirectory: true)
+    /// Settings of its own, so nothing chosen in the app on this Simulator reaches a test, or the other way round.
+    let settings = "com.abhishekpratapa.todos.tests.\(UUID().uuidString)"
+    var defaults: UserDefaults { UserDefaults(suiteName: settings)! }
 
     /// The live connection, driven by the test: `live.yield(...)` is the Mac's event stream reporting something.
     private let channel = AsyncStream.makeStream(of: LiveState.self)
@@ -21,7 +24,7 @@ struct AppModelTests {
 
     /// A fresh launch of the app, with the same Keychain item and the same files on disk.
     func launch() -> AppModel {
-        AppModel(credentials: keychain, makeClient: { [mac] in mac.client($0) }, liveStates: { [channel] _ in channel.stream }, dataDirectory: directory)
+        AppModel(credentials: keychain, makeClient: { [mac] in mac.client($0) }, liveStates: { [channel] _ in channel.stream }, dataDirectory: directory, defaults: defaults)
     }
 
     /// An app that has paired and loaded the list.
@@ -34,12 +37,65 @@ struct AppModelTests {
     func cleanUp() {
         try? keychain.clear()
         try? FileManager.default.removeItem(at: directory)
+        defaults.removePersistentDomain(forName: settings)
     }
 
     /// Waits for something that happens a moment later, on the model's own schedule.
     func eventually(_ condition: () -> Bool) async -> Bool {
         for _ in 0..<300 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         return condition()
+    }
+
+    // MARK: The list's choices
+
+    @Test("the list's filters and sort are kept on this iPhone between launches, but not the search")
+    func listChoicesKept() async throws {
+        defer { cleanUp() }
+        mac.add("Renew passport")
+        let model = await paired()
+        #expect(model.query == TaskQuery(), "a first launch starts with everything open, in the Mac's order")
+        model.query.filter = .todo
+        model.query.focus = [.overdue, .dueToday]
+        model.query.projects = ["Home", ""]
+        model.query.priorities = [.high]
+        model.query.tags = ["errands", "money"]
+        model.query.tagMode = .all
+        model.query.sort = try TaskSort("due,-priority")
+        model.query.search = "passport"
+
+        var kept = model.query
+        kept.search = ""
+        let again = launch()
+        #expect(again.query == kept)
+
+        // What this version can't read (a sort key from a later one) starts afresh; the rest stands.
+        defaults.set(Data(#"{"filter": "done", "sort": "due,urgency", "priorities": ["high"]}"#.utf8), forKey: "taskQuery")
+        let later = launch()
+        #expect(later.query.filter == .done && later.query.sort.isDefault && later.query.priorities == [.high])
+        defaults.set(Data("not JSON".utf8), forKey: "taskQuery")
+        #expect(launch().query == TaskQuery())
+
+        // Unpairing starts the list afresh, here and at the next launch.
+        model.query.priorities = [.low]
+        await model.unpair(erasingData: true)
+        #expect(model.query == TaskQuery() && launch().query == TaskQuery())
+    }
+
+    @Test("the Today tab: overdue, then due today, most important first; its badge is what the widget counts")
+    func todayTab() async throws {
+        defer { cleanUp() }
+        let today = Day.today()
+        mac.add("Call mom") { $0.due = today.adding(days: -2) }
+        mac.add("Renew passport") { $0.due = today.adding(days: -6); $0.priority = .high }
+        mac.add("Pay rent") { $0.due = today; $0.priority = .high }
+        mac.add("Order groceries") { $0.due = today }
+        mac.add("Finished late") { $0.due = today.adding(days: -1); $0.status = .done }
+        mac.add("Tomorrow") { $0.due = today.adding(days: 1) }
+        let model = await paired()
+        let sections = model.due.todaySections
+        #expect(sections.map(\.kind) == [.overdue, .today])
+        #expect(sections.map { $0.tasks.map(\.title) } == [["Renew passport", "Call mom"], ["Pay rent", "Order groceries"]])
+        #expect(model.due.dueNow.count == 4 && model.counts.overdue + model.counts.dueToday == 4)
     }
 
     // MARK: Pairing

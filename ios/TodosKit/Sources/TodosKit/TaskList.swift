@@ -1,10 +1,10 @@
 // Turning the task list into what the phone shows: the Mac's four columns become
-// sections, with a filter and search.
+// sections, filtered and sorted by the same rules as everywhere else (ListRules.swift).
 
 import Foundation
 
 /// The segmented control at the top of the list.
-public enum TaskFilter: String, Sendable, CaseIterable, Identifiable {
+public enum TaskFilter: String, Sendable, Codable, CaseIterable, Identifiable {
     case open, todo, inProgress, blocked, done
 
     public var id: String { rawValue }
@@ -31,8 +31,8 @@ public enum TaskFilter: String, Sendable, CaseIterable, Identifiable {
     }
 }
 
-/// The narrower views the Mac's stat tiles offer.
-public enum TaskFocus: String, Sendable, CaseIterable, Identifiable {
+/// The narrower views the Mac's stat tiles offer. Several can be picked: a task in any of them shows.
+public enum TaskFocus: String, Sendable, Codable, CaseIterable, Identifiable {
     case dueToday, overdue, withClaude
 
     public var id: String { rawValue }
@@ -44,40 +44,92 @@ public enum TaskFocus: String, Sendable, CaseIterable, Identifiable {
         case .withClaude: "With Claude"
         }
     }
+
+    /// The filter this view is, as the Mac's tile has it.
+    public var rule: ListFilter {
+        switch self {
+        case .dueToday: ListFilter(statuses: Set(TaskStatus.allCases.filter(\.isOpen)), due: "today")
+        case .overdue: ListFilter(due: "overdue")
+        case .withClaude: ListFilter(assignees: [.claude])
+        }
+    }
 }
 
-public struct TaskQuery: Sendable, Equatable {
+/// What the list shows, and in what order. Kept on this iPhone between launches, all
+/// but the search.
+public struct TaskQuery: Sendable, Equatable, Codable {
     public var filter: TaskFilter
-    public var focus: TaskFocus?
-    public var project: String?
+    public var focus: Set<TaskFocus>
+    /// Project names as the menu shows them; "" is tasks with no project. Case doesn't matter.
+    public var projects: Set<String>
+    public var priorities: Set<TaskPriority>
+    public var tags: Set<String>
+    public var tagMode: ListFilter.TagMode
+    /// Within each section: sections are the statuses already.
+    public var sort: TaskSort
     public var search: String
 
-    public init(filter: TaskFilter = .open, focus: TaskFocus? = nil, project: String? = nil, search: String = "") {
+    public init(filter: TaskFilter = .open, focus: Set<TaskFocus> = [], projects: Set<String> = [], priorities: Set<TaskPriority> = [],
+                tags: Set<String> = [], tagMode: ListFilter.TagMode = .any, sort: TaskSort = .default, search: String = "") {
         self.filter = filter
         self.focus = focus
-        self.project = project
+        self.projects = projects
+        self.priorities = priorities
+        self.tags = tags
+        self.tagMode = tagMode
+        self.sort = sort
         self.search = search
     }
 
     /// True when something beyond the status filter is narrowing the list.
     public var isNarrowed: Bool {
-        focus != nil || project != nil || !search.trimmingCharacters(in: .whitespaces).isEmpty
+        !focus.isEmpty || isFiltered || !search.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// True when the Filter menu has narrowed the list: the views, projects, priorities or tags.
+    public var isFiltered: Bool {
+        !focus.isEmpty || !projects.isEmpty || !priorities.isEmpty || !tags.isEmpty
+    }
+
+    /// The projects, priorities, tags and search, as the app's rules have them (see ListFilter).
+    public var rule: ListFilter {
+        ListFilter(priorities: priorities.isEmpty ? nil : priorities, projects: projects.isEmpty ? nil : projects,
+                   tags: tags.isEmpty ? nil : tags, tagMode: tagMode, search: search)
     }
 
     public func matches(_ task: TodoTask, today: Day) -> Bool {
         guard filter.statuses.contains(task.status) else { return false }
-        switch focus {
-        case .dueToday: guard task.isDueToday(today) else { return false }
-        case .overdue: guard task.isOverdue(on: today) else { return false }
-        case .withClaude: guard task.assignee == .claude else { return false }
-        case nil: break
-        }
-        if let project, (task.project ?? "").caseInsensitiveCompare(project) != .orderedSame { return false }
-        let words = search.lowercased().split(whereSeparator: \.isWhitespace)
-        guard !words.isEmpty else { return true }
-        // The same text the Mac searches: title, notes, project, tags and subtask titles.
-        let haystack = ([task.title, task.notes, task.project ?? ""] + task.tags + task.subtasks.map(\.title)).joined(separator: "\n").lowercased()
-        return words.allSatisfy { haystack.contains($0) }
+        guard focus.isEmpty || focus.contains(where: { $0.rule.matches(task, today: today) }) else { return false }
+        return rule.matches(task, today: today)
+    }
+
+    // What is kept between launches. Each field is read on its own, so one that can't be
+    // read any more (a sort key this version doesn't know) leaves the rest as they were.
+    enum CodingKeys: String, CodingKey {
+        case filter, focus, projects, priorities, tags, tagMode, sort
+    }
+
+    public init(from decoder: Decoder) throws {
+        let saved = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        filter = (try? saved.decode(TaskFilter.self, forKey: .filter)) ?? filter
+        focus = (try? saved.decode(Set<TaskFocus>.self, forKey: .focus)) ?? focus
+        projects = (try? saved.decode(Set<String>.self, forKey: .projects)) ?? projects
+        priorities = (try? saved.decode(Set<TaskPriority>.self, forKey: .priorities)) ?? priorities
+        tags = (try? saved.decode(Set<String>.self, forKey: .tags)) ?? tags
+        tagMode = (try? saved.decode(ListFilter.TagMode.self, forKey: .tagMode)) ?? tagMode
+        sort = (try? saved.decode(TaskSort.self, forKey: .sort)) ?? sort
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var saved = encoder.container(keyedBy: CodingKeys.self)
+        try saved.encode(filter, forKey: .filter)
+        try saved.encode(focus.map(\.rawValue).sorted(), forKey: .focus)
+        try saved.encode(projects.sorted(), forKey: .projects)
+        try saved.encode(priorities.map(\.rawValue).sorted(), forKey: .priorities)
+        try saved.encode(tags.sorted(), forKey: .tags)
+        try saved.encode(tagMode, forKey: .tagMode)
+        try saved.encode(sort, forKey: .sort)
     }
 }
 
@@ -89,30 +141,15 @@ public struct TaskSection: Sendable, Equatable, Identifiable {
 }
 
 extension [TodoTask] {
-    /// The Mac's order (store.js sortTodos): in progress, blocked, to do, then done.
-    /// Open tasks go by priority, then due date (undated last), then age; done tasks by most recently finished.
+    /// The Mac's usual order: in progress, blocked, to do, then done. Open tasks go by
+    /// priority, then due date (undated last); done tasks by most recently finished.
     public func inListOrder() -> [TodoTask] {
-        let statusRank: [TaskStatus: Int] = [.inProgress: 0, .blocked: 1, .todo: 2, .done: 3]
-        let priorityRank: [TaskPriority: Int] = [.high: 0, .medium: 1, .low: 2]
-        return sorted { a, b in
-            if a.status != b.status { return statusRank[a.status]! < statusRank[b.status]! }
-            if a.status == .done {
-                if a.completedAt != b.completedAt { return (a.completedAt ?? .distantPast) > (b.completedAt ?? .distantPast) }
-                return a.id < b.id
-            }
-            if a.priority != b.priority { return priorityRank[a.priority]! < priorityRank[b.priority]! }
-            if a.due != b.due {
-                guard let x = a.due else { return false }
-                guard let y = b.due else { return true }
-                return x < y
-            }
-            return a.id < b.id
-        }
+        sorted(by: .default)
     }
 
-    /// The sections to show for a query. Empty sections are left out.
+    /// The sections to show for a query, each in the query's order. Empty sections are left out.
     public func sections(for query: TaskQuery, today: Day) -> [TaskSection] {
-        let matching = filter { query.matches($0, today: today) }.inListOrder()
+        let matching = filter { query.matches($0, today: today) }.sorted(by: query.sort)
         return query.filter.statuses.compactMap { status in
             let tasks = matching.filter { $0.status == status }
             return tasks.isEmpty ? nil : TaskSection(status: status, tasks: tasks)
@@ -125,6 +162,11 @@ extension [TodoTask] {
         return compactMap(\.project)
             .filter { seen.insert($0.lowercased()).inserted }
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// Tags in use, for the filter menu.
+    public var tags: [String] {
+        Set(flatMap(\.tags)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     /// The same counts as the Mac's tiles, worked out from the tasks on hand.

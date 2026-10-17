@@ -1,5 +1,6 @@
-// The top of the app: pairing until this iPhone knows a Mac, then two tabs, the
-// task list and the habits. Quick capture floats over the list, one tap away.
+// The top of the app: pairing until this iPhone knows a Mac, then three tabs: the
+// task list, what is due today, and the habits. Quick capture floats over the list,
+// one tap away.
 
 import SwiftUI
 import TodosKit
@@ -37,7 +38,7 @@ struct RootView: View {
 
 struct MainView: View {
     enum Tab: Hashable {
-        case tasks, habits
+        case tasks, today, habits
     }
 
     @Environment(AppModel.self) private var model
@@ -45,6 +46,7 @@ struct MainView: View {
     @State private var capturing = false
     @State private var showingSettings = false
     @State private var path: [Int] = []
+    @State private var todayPath: [Int] = []
 
     var body: some View {
         @Bindable var model = model
@@ -52,6 +54,14 @@ struct MainView: View {
             tasks
                 .tabItem { Label("Tasks", systemImage: "checklist") }
                 .tag(Tab.tasks)
+            NavigationStack(path: $todayPath) {
+                TodayView()
+                    .navigationDestination(for: Int.self) { TaskDetailView(taskID: $0) }
+            }
+            .overlay(alignment: .bottom) { notice(bottom: 16) }
+            .tabItem { Label("Today", systemImage: "sun.max") }
+            .badge(model.due.dueNow.count)
+            .tag(Tab.today)
             HabitsView(showingSettings: $showingSettings)
                 .overlay(alignment: .bottom) { notice(bottom: 16) }
                 .tabItem { Label("Habits", systemImage: "flame") }

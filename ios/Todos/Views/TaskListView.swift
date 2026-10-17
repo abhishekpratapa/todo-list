@@ -1,5 +1,6 @@
 // The list: the Mac's four columns as sections, with a segmented control to pick
-// which ones show. Swipe a task to complete it, move it, or delete it.
+// which ones show, and the Sort and Filter menus (see ListControls.swift). Swipe a
+// task to complete it, move it, or delete it.
 
 import SwiftUI
 import TodosKit
@@ -75,12 +76,16 @@ struct TaskListView: View {
         .contentMargins(.bottom, 88, for: .scrollContent) // room for the capture button
         .overlay { emptyState(sections) }
         .safeAreaInset(edge: .top, spacing: 0) {
-            Picker("Show", selection: $model.query.filter) {
-                ForEach(TaskFilter.allCases) { Text($0.label).tag($0) }
+            VStack(spacing: 0) {
+                Picker("Show", selection: $model.query.filter) {
+                    ForEach(TaskFilter.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                ActiveFilterBar()
+                    .padding(.bottom, 8)
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
-            .padding(.vertical, 8)
             .background(.bar)
         }
         .navigationTitle("Todos")
@@ -96,7 +101,10 @@ struct TaskListView: View {
                 .accessibilityLabel("Settings")
                 .accessibilityValue(model.issue?.title ?? (model.isLive ? "Connected to your Mac" : "Connecting to your Mac"))
             }
-            ToolbarItem(placement: .topBarTrailing) { filterMenu }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                SortMenu()
+                FilterMenu()
+            }
         }
         .confirmationDialog(
             deleting.map { "Delete “\($0.title)”?" } ?? "",
@@ -160,37 +168,6 @@ struct TaskListView: View {
         }
         Divider()
         Button(role: .destructive) { deleting = task } label: { Label("Delete", systemImage: "trash") }
-    }
-
-    private var filterMenu: some View {
-        @Bindable var model = model
-        return Menu {
-            Picker("Focus", selection: $model.query.focus) {
-                Text("All").tag(TaskFocus?.none)
-                ForEach(TaskFocus.allCases) { focus in
-                    Text("\(focus.label) (\(count(focus)))").tag(TaskFocus?.some(focus))
-                }
-            }
-            if !model.projects.isEmpty {
-                Picker("Project", selection: $model.query.project) {
-                    Text("All Projects").tag(String?.none)
-                    ForEach(model.projects, id: \.self) { Text($0).tag(String?.some($0)) }
-                }
-            }
-        } label: {
-            Image(systemName: model.query.focus != nil || model.query.project != nil ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-        }
-        .accessibilityLabel("Filter")
-        .accessibilityValue([model.query.focus?.label, model.query.project].compactMap { $0 }.joined(separator: ", "))
-    }
-
-    private func count(_ focus: TaskFocus) -> Int {
-        let counts = model.counts
-        switch focus {
-        case .dueToday: return counts.dueToday
-        case .overdue: return counts.overdue
-        case .withClaude: return counts.claude
-        }
     }
 
     // MARK: Empty and error states

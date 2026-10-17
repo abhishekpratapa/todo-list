@@ -51,7 +51,13 @@ final class AppModel {
     /// Why the Mac can't be reached right now, if it can't.
     private(set) var issue: ConnectionIssue?
 
-    var query = TaskQuery()
+    /// What the list shows and in what order. Kept on this iPhone between launches, all but
+    /// the search (see TaskQuery's Codable conformance).
+    var query = TaskQuery() {
+        didSet {
+            if query != oldValue { defaults.set(try? JSONEncoder().encode(query), forKey: Self.queryKey) }
+        }
+    }
     var notice: Notice?
     /// Set by any screen to show the Sync screen: what is waiting, and what needs a decision.
     var isShowingSync = false
@@ -66,6 +72,7 @@ final class AppModel {
     @ObservationIgnored private let makeClient: (HubCredentials) -> HubClient
     @ObservationIgnored private let liveStates: (HubClient) -> AsyncStream<LiveState>
     @ObservationIgnored private let dataDirectory: URL
+    @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var client: HubClient?
     @ObservationIgnored private var store: LocalStore?
     @ObservationIgnored private var engine: SyncEngine?
@@ -80,19 +87,25 @@ final class AppModel {
     // Logs say what happened, never what a task says or what the token is.
     @ObservationIgnored private let log = Logger(subsystem: "com.abhishekpratapa.todos.ios", category: "sync")
 
-    /// The defaults are the real thing: the Keychain, the network, the Mac's event stream
-    /// and the shared container. Tests replace them.
+    /// The defaults are the real thing: the Keychain, the network, the Mac's event stream,
+    /// the shared container and this app's own settings. Tests replace them.
     init(
         credentials: any CredentialStore = KeychainCredentialStore(),
         makeClient: @escaping (HubCredentials) -> HubClient = { HubClient(credentials: $0) },
         liveStates: @escaping (HubClient) -> AsyncStream<LiveState> = { LiveUpdates(client: $0).states() },
-        dataDirectory: URL = SharedContainer.directory
+        dataDirectory: URL = SharedContainer.directory,
+        defaults: UserDefaults = .standard
     ) {
         self.credentials = credentials
         self.makeClient = makeClient
         self.liveStates = liveStates
         self.dataDirectory = dataDirectory
+        self.defaults = defaults
+        // Anything that can't be read any more (a sort from a later version) is left as it starts.
+        query = defaults.data(forKey: Self.queryKey).flatMap { try? JSONDecoder().decode(TaskQuery.self, from: $0) } ?? TaskQuery()
     }
+
+    private static let queryKey = "taskQuery"
 
     /// Called whenever what is on screen has been worked out afresh, with the tasks and
     /// habits as shown. The app uses it to reschedule reminders and refresh the widgets.
@@ -339,6 +352,16 @@ final class AppModel {
 
     var projects: [String] {
         tasks.projects
+    }
+
+    var tags: [String] {
+        tasks.tags
+    }
+
+    /// The open tasks by when they are due, as the widget has them. The Today tab shows the
+    /// first two groups (`todaySections`), and its badge counts them (`dueNow`).
+    var due: DueOverview {
+        DueOverview(tasks: tasks, on: .today())
     }
 
     /// A task as shown, with its history if that has been fetched.
