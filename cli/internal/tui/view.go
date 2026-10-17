@@ -114,6 +114,8 @@ func (m Model) tileCount(f focus) int {
 		return m.counts.Claude
 	case focusDone:
 		return m.counts.Done7d
+	case focusNow:
+		return m.counts.Overdue + m.counts.DueToday // what the Dock badge counts
 	}
 	return m.counts.Open
 }
@@ -394,6 +396,9 @@ func (m Model) statusView() string {
 	}
 	if habits := m.habitsStatus(); habits != "" {
 		parts = append(parts, s.StatusBar.Render(habits))
+	}
+	if m.order > 0 {
+		parts = append(parts, s.StatusBar.Render("sorted by "+sorts[m.order].label))
 	}
 	left := " " + strings.Join(parts, s.Faint.Render(" · "))
 	right := ""

@@ -6,12 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"todos/internal/api"
+	"todos/internal/config"
+	"todos/internal/out"
+	"todos/internal/query"
 	"todos/internal/queue"
 )
 
@@ -97,11 +102,31 @@ func patch(ctx context.Context, c *api.Client, id int, fields map[string]any, re
 	return c.PatchOnTop(ctx, base, fields)
 }
 
-// list prints tasks matching o. limit 0 means all of them.
+// list prints tasks matching o. limit 0 means all of them. With no sort given,
+// the one "sort" in config.json names is used, if any.
 func (a *App) list(ctx context.Context, o api.ListOptions, limit int) error {
+	fromConfig := false
+	if o.Sort == "" {
+		if cfg, err := config.Load(a.configDir()); err == nil && cfg.Sort != "" {
+			o.Sort, fromConfig = cfg.Sort, true
+		}
+	}
+	// Checked here, so a mistyped key is said before anything is asked of the Mac.
+	sort, err := query.ParseSort(o.Sort)
+	switch {
+	case err != nil && fromConfig:
+		return usagef("\"sort\" in %s: %v", filepath.Join(a.configDir(), "config.json"), err)
+	case err != nil:
+		return usagef("%v", err)
+	case sort.IsDefault():
+		o.Sort = "" // the usual order: nothing to ask for, so any app can give it
+	}
 	s, err := a.connect(ctx)
 	if err != nil {
 		return err
+	}
+	if feature := newInLists(o, fromConfig); feature != "" && s.Info.APIVersion.Revision < api.ListsRevision {
+		return &api.VersionError{AppTooOld: true, Feature: feature, Have: strconv.Itoa(s.Info.APIVersion.Revision), Need: strconv.Itoa(api.ListsRevision)}
 	}
 	o.Limit = limit
 	found, err := s.Client.ListAll(ctx, o)
@@ -120,9 +145,74 @@ func (a *App) list(ctx context.Context, o api.ListOptions, limit int) error {
 	return nil
 }
 
+// newInLists names what a listing asks for that came with API revision 7, for
+// the refusal an older app gets. It is empty when the listing asks for nothing new.
+func newInLists(o api.ListOptions, sortFromConfig bool) string {
+	due := strings.ToLower(strings.TrimSpace(o.Due))
+	switch {
+	case o.Sort != "" && sortFromConfig:
+		return `sorted lists ("sort" in config.json)`
+	case o.Sort != "":
+		return "sorted lists (--sort)"
+	case strings.Contains(o.Tag, ",") || o.TagMode != "":
+		return "lists of tags (--tag a,b) and --tag-mode"
+	case o.Project != nil && strings.Contains(*o.Project, ","):
+		return "lists of projects (--project a,b)"
+	case due == "tomorrow" || strings.HasPrefix(due, "before:") || strings.HasPrefix(due, "after:"):
+		return "--due tomorrow, before: and after:"
+	}
+	return ""
+}
+
+// sortKeys completes --sort: each key, ascending or reversed, after the ones
+// already given.
+func sortKeys(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	given := ""
+	if i := strings.LastIndex(toComplete, ","); i >= 0 {
+		given = toComplete[:i+1]
+	}
+	var out []string
+	for _, key := range query.Keys {
+		switch {
+		case key == query.Default:
+			if given == "" {
+				out = append(out, key)
+			}
+		case !strings.Contains(","+given, ","+key+",") && !strings.Contains(","+given, ",-"+key+","):
+			out = append(out, given+key, given+"-"+key)
+		}
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
+}
+
+// taskGroup is a heading and the tasks under it, as `todos due` and `todos today` print them.
+type taskGroup struct {
+	title string
+	tasks []api.Task
+}
+
+// groups prints each group that has tasks under its heading, with a count.
+func groups(p *out.Printer, list []taskGroup) {
+	printed := false
+	for _, g := range list {
+		if len(g.tasks) == 0 {
+			continue
+		}
+		if printed {
+			p.Blank()
+		}
+		p.Heading(fmt.Sprintf("%s (%d)", g.title, len(g.tasks)))
+		p.Tasks(g.tasks)
+		printed = true
+	}
+	if !printed && p.Styled {
+		p.Tasks(nil)
+	}
+}
+
 func (a *App) taskCommands() []*cobra.Command {
 	return []*cobra.Command{
-		a.addCmd(), a.lsCmd(), a.dueCmd(), a.showCmd(),
+		a.addCmd(), a.lsCmd(), a.dueCmd(), a.todayCmd(), a.showCmd(),
 		a.doneCmd(), a.statusCmd("start", "in_progress", "Started", "Move tasks to In progress"),
 		a.blockCmd(), a.statusCmd("reopen", "todo", "Reopened", "Move tasks back to To do"),
 		a.editCmd(), a.rmCmd(), a.subCmd(), a.commentCmd(), a.watchCmd(), a.claudeCmd(),
@@ -200,12 +290,21 @@ func (a *App) lsCmd() *cobra.Command {
 		Use:     "ls",
 		Aliases: []string{"list"},
 		Short:   "List tasks",
-		Long: "List tasks: open ones unless --status or --all says otherwise.\n\n" +
+		Long: "List tasks: open ones unless --status or --all says otherwise. Several values\n" +
+			"for one filter, separated by commas, mean any of them; different filters must\n" +
+			"all match.\n\n" +
+			"In the app's usual order (in progress, blocked, to do, done; then by priority\n" +
+			"and due date) unless --sort says otherwise: keys separated by commas, each\n" +
+			"reversed by a leading -, from default, status, priority (high first), due,\n" +
+			"created, updated, completed, title, project and id. Tasks with nothing to sort\n" +
+			"by (no due date, say) come last either way. \"sort\" in config.json sets the\n" +
+			"one used when --sort isn't given.\n\n" +
 			"For a pipe, each task is one line of tab-separated fields: id, status, priority,\n" +
 			"due (\"-\" if none) and title. With --json the output is the API's own:\n" +
 			"{\"tasks\": [...], \"total\": n, \"summary\": {...}, \"version\": n}.",
-		Example: "todos ls --due week\ntodos ls --status blocked,in_progress\ntodos ls --tag errand --priority high\ntodos ls --json | jq -r '.tasks[].title'",
-		Args:    noArgs,
+		Example: "todos ls --due week\ntodos ls --sort due,-priority\ntodos ls --status blocked,in_progress\ntodos ls --tag errand,bank --tag-mode all\n" +
+			"todos ls --project work,home --priority high\ntodos ls --json | jq -r '.tasks[].title'",
+		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if all {
 				o.Status = "all"
@@ -219,17 +318,21 @@ func (a *App) lsCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&o.Status, "status", "", "open (default), all, or any of todo, in_progress, blocked, done, separated by commas")
 	f.BoolVarP(&all, "all", "a", false, "include finished tasks (same as --status all)")
-	f.StringVar(&o.Tag, "tag", "", "only tasks with this tag")
-	f.StringVar(&project, "project", "", "only tasks in this project (\"\" for tasks with none)")
+	f.StringVar(&o.Tag, "tag", "", "only tasks with this tag, or any of these, separated by commas")
+	f.StringVar(&o.TagMode, "tag-mode", "", "any (the default) or all: whether a task needs any of the tags or every one")
+	f.StringVar(&project, "project", "", "only tasks in this project, or any of these, separated by commas (\"\" for tasks with none)")
 	f.StringVar(&o.Priority, "priority", "", "high, medium or low, separated by commas")
 	f.StringVar(&o.Assignee, "assignee", "", "me or claude")
-	f.StringVar(&o.Due, "due", "", "today, week, overdue, none, any, or a date (due on or before it)")
+	f.StringVar(&o.Due, "due", "", "overdue, today, tomorrow, week, none, any, before:DATE, after:DATE, or a date (due on or before it)")
 	f.StringVarP(&o.Query, "search", "s", "", "words that must all appear in the title, notes, project, tags or subtasks")
+	f.StringVar(&o.Sort, "sort", "", "keys to sort by, separated by commas, such as due,-priority (- reverses one)")
 	f.IntVarP(&limit, "limit", "n", 0, "show at most this many")
 	_ = cmd.RegisterFlagCompletionFunc("status", fixed("open", "all", "todo", "in_progress", "blocked", "done"))
 	_ = cmd.RegisterFlagCompletionFunc("priority", fixed("high", "medium", "low"))
 	_ = cmd.RegisterFlagCompletionFunc("assignee", fixed("me", "claude"))
-	_ = cmd.RegisterFlagCompletionFunc("due", fixed("today", "week", "overdue", "none", "any"))
+	_ = cmd.RegisterFlagCompletionFunc("due", fixed("overdue", "today", "tomorrow", "week", "none", "any", "before:", "after:"))
+	_ = cmd.RegisterFlagCompletionFunc("tag-mode", fixed("any", "all"))
+	_ = cmd.RegisterFlagCompletionFunc("sort", sortKeys)
 	return cmd
 }
 
@@ -257,28 +360,61 @@ func (a *App) dueCmd() *cobra.Command {
 				return p.Value(raw)
 			}
 			p.Today = due.Date
-			groups := []struct {
-				title string
-				tasks []api.Task
-			}{{"Overdue", due.Overdue}, {"Today", due.Today}, {"Next 7 days", due.Upcoming}, {"No date", due.Undated}}
-			printed := false
-			for _, g := range groups {
-				if len(g.tasks) == 0 {
-					continue
-				}
-				if printed {
-					p.Blank()
-				}
-				p.Heading(fmt.Sprintf("%s (%d)", g.title, len(g.tasks)))
-				p.Tasks(g.tasks)
-				printed = true
-			}
-			if !printed && p.Styled {
-				p.Tasks(nil)
-			}
+			groups(p, []taskGroup{{"Overdue", due.Overdue}, {"Today", due.Today}, {"Next 7 days", due.Upcoming}, {"No date", due.Undated}})
 			return nil
 		},
 	}
+}
+
+func (a *App) todayCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "today",
+		Short: "What needs doing today: overdue, then due today",
+		Long: "Open tasks that are overdue, then the ones due today, each most important first\n" +
+			"and then oldest first: the app's Today view. Between them they are what the\n" +
+			"Mac's Dock badge counts.\n\n" +
+			"With --json the output is the API's own: {\"overdue\": [...], \"today\": [...],\n" +
+			"\"counts\": {\"overdue\": n, \"today\": n, \"total\": n}, \"date\": \"YYYY-MM-DD\"}.",
+		Args: noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s, err := a.connect(cmd.Context())
+			if err != nil {
+				return err
+			}
+			today, raw, err := todayView(cmd.Context(), s)
+			if err != nil {
+				return err
+			}
+			p := a.p()
+			if a.json {
+				return p.Value(raw)
+			}
+			p.Today = today.Date
+			groups(p, []taskGroup{{"Overdue", today.Overdue}, {"Today", today.Today}})
+			return nil
+		},
+	}
+}
+
+// todayView asks the app for the Today view, and returns the answer as it came
+// too. An app from before the view (API revision 7) has the same two groups in
+// GET /due, in the list's usual order: here they are put in the view's own,
+// by the app's own rules, and the answer is made in the same shape.
+func todayView(ctx context.Context, s *Session) (*api.Today, any, error) {
+	if s.Info.APIVersion.Revision >= api.ListsRevision {
+		return s.Client.Today(ctx)
+	}
+	due, _, err := s.Client.Due(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	t := &api.Today{
+		Overdue: query.Sorted(due.Overdue, api.Task.AsQuery, query.TodaySort),
+		Today:   query.Sorted(due.Today, api.Task.AsQuery, query.TodaySort),
+		Date:    due.Date,
+	}
+	t.Counts = map[string]int{"overdue": len(t.Overdue), "today": len(t.Today), "total": len(t.Overdue) + len(t.Today)}
+	return t, t, nil
 }
 
 func (a *App) showCmd() *cobra.Command {

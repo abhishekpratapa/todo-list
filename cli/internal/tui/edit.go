@@ -149,7 +149,7 @@ func (m Model) fullHelp() [][]key.Binding {
 	k := m.keys
 	groups := [][]key.Binding{
 		{k.Up, k.Down, k.Left, k.Right, k.Top, k.Bottom},
-		{k.NextTile, k.PrevTile, k.Search, k.Open, k.Back, k.Refresh, k.Help, k.Quit},
+		{k.NextTile, k.PrevTile, k.Sort, k.Search, k.Open, k.Back, k.Refresh, k.Help, k.Quit},
 		{k.Add, k.Edit, k.Notes, k.Comment, k.Delete, k.Claude},
 		{k.Done, k.Start, k.Block, k.MoveLeft, k.MoveRight, k.Toggle, k.AddSubtask},
 	}

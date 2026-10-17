@@ -14,12 +14,15 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"todos/internal/api"
+	"todos/internal/query"
 )
 
 // The columns of the board, in order.
 var statuses = [4]string{"todo", "in_progress", "blocked", "done"}
 
 // The tiles above the board. Each is a filter, as on the app's dashboard.
+// Today, last so the others keep their numbers, is the app's Today view:
+// overdue and due today together.
 type focus int
 
 const (
@@ -28,6 +31,7 @@ const (
 	focusOverdue
 	focusClaude
 	focusDone
+	focusNow
 )
 
 var tiles = []struct {
@@ -35,10 +39,39 @@ var tiles = []struct {
 	label, short string
 }{
 	{focusOpen, "Open", "Open"},
-	{focusToday, "Due today", "Today"},
+	{focusToday, "Due today", "Due"},
 	{focusOverdue, "Overdue", "Late"},
 	{focusClaude, "With Claude", "Claude"},
 	{focusDone, "Done this week", "Done"},
+	{focusNow, "Today", "Today"},
+}
+
+// The tiles' filters, by the app's rules (see internal/query). Done this week
+// and Today are worked out in matches.
+var tileFilters = map[focus]query.Filter{
+	focusToday:   mustFilter(map[string]string{"status": "open", "due": "today"}),
+	focusOverdue: mustFilter(map[string]string{"due": "overdue"}),
+	focusClaude:  mustFilter(map[string]string{"status": "open", "assignee": "claude"}),
+}
+
+func mustFilter(fields map[string]string) query.Filter {
+	f, err := query.ParseFilter(fields)
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
+// The orders `o` steps through. Each column is sorted on its own.
+var sorts = []struct {
+	label string
+	sort  query.Sort
+}{
+	{"default", query.DefaultSort},
+	{"due date", query.Sort{{Name: "due"}}},
+	{"priority", query.Sort{{Name: "priority"}}},
+	{"newest", query.Sort{{Name: "created", Desc: true}}},
+	{"title", query.Sort{{Name: "title"}}},
 }
 
 const (
@@ -93,6 +126,7 @@ type Model struct {
 
 	// What is shown and selected.
 	focus     focus
+	order     int // which of sorts
 	query     string
 	search    textinput.Model
 	searching bool
@@ -442,8 +476,11 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.focus = focus((int(m.focus) + 1) % len(tiles))
 	case key.Matches(msg, m.keys.PrevTile):
 		m.focus = focus((int(m.focus) + len(tiles) - 1) % len(tiles))
-	case len(msg.String()) == 1 && msg.String() >= "1" && msg.String() <= "5":
+	case len(msg.String()) == 1 && msg.String() >= "1" && msg.String()[0] < '1'+byte(len(tiles)):
 		m.focus = focus(msg.String()[0] - '1')
+	case key.Matches(msg, m.keys.Sort):
+		m.order = (m.order + 1) % len(sorts)
+		m.follow2() // the same card stays selected wherever it lands
 	case key.Matches(msg, m.keys.Refresh):
 		return m, tea.Batch(m.refresh(), m.loadHabits())
 	case key.Matches(msg, m.keys.Habits) && len(m.habits) > 0:
@@ -557,41 +594,27 @@ func (m Model) narrow() bool { return m.width < narrowBelow }
 
 // matches says whether a task passes the tile filter and the search.
 func (m Model) matches(t *api.Task) bool {
+	task := t.AsQuery()
 	switch m.focus {
-	case focusToday:
-		if t.Status == "done" || t.Due == "" || t.Due != m.today {
-			return false
-		}
-	case focusOverdue:
-		if t.Status == "done" || t.Due == "" || t.Due >= m.today {
-			return false
-		}
-	case focusClaude:
-		if t.Status == "done" || t.Assignee != "claude" {
-			return false
-		}
 	case focusDone:
 		weekAgo := m.opts.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339)
 		if t.Status != "done" || t.CompletedAt < weekAgo {
 			return false
 		}
-	}
-	if words := strings.Fields(strings.ToLower(m.query)); len(words) > 0 {
-		text := strings.ToLower(strings.Join(append([]string{t.Title, t.Notes, t.Project}, t.Tags...), "\n"))
-		for _, s := range t.Subtasks {
-			text += "\n" + strings.ToLower(s.Title)
+	case focusNow:
+		if !query.InToday(task, m.today) {
+			return false
 		}
-		for _, w := range words {
-			if !strings.Contains(text, w) {
-				return false
-			}
+	default:
+		if f, ok := tileFilters[m.focus]; ok && !f.Matches(task, m.today) {
+			return false
 		}
 	}
-	return true
+	return m.query == "" || mustFilter(map[string]string{"q": m.query}).Matches(task, m.today)
 }
 
 // columns is what is shown: the tasks that pass the filters, by status, in the
-// order the app sorts them.
+// order the app sorts them, or the one `o` has picked.
 func (m Model) columns() [4][]api.Task {
 	var cols [4][]api.Task
 	for i := range m.tasks {
@@ -603,6 +626,12 @@ func (m Model) columns() [4][]api.Task {
 			if t.Status == status {
 				cols[c] = append(cols[c], *t)
 			}
+		}
+	}
+	// The list comes in the usual order already.
+	if order := sorts[m.order].sort; !order.IsDefault() {
+		for c := range cols {
+			cols[c] = query.Sorted(cols[c], api.Task.AsQuery, order)
 		}
 	}
 	return cols

@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/exp/golden"
 
 	"todos/internal/api"
+	"todos/internal/query"
 )
 
 // The moment every test is set at: Tuesday 13 October 2026, 12:00 UTC.
@@ -261,7 +262,7 @@ func TestTilesFilter(t *testing.T) {
 		return strings.Join(ids, " ")
 	}
 	tilesLine := func(m Model) string { return strings.Split(plain(m), "\n")[0] }
-	if got := tilesLine(m); got != " Open 7   Due today 2   Overdue 2   With Claude 1   Done this week 2 " {
+	if got := tilesLine(m); got != " Open 7   Due today 2   Overdue 2   With Claude 1   Done this week 2   Today 4 " {
 		t.Errorf("tiles: %q", got)
 	}
 	for _, c := range []struct {
@@ -269,13 +270,15 @@ func TestTilesFilter(t *testing.T) {
 		want string
 	}{
 		{nil, "41 44 42 43 38 35 29 40 33 12"},
-		{[]string{"tab"}, "42 38"}, // due today
-		{[]string{"tab"}, "44 29"}, // overdue
-		{[]string{"tab"}, "38"},    // with Claude
-		{[]string{"tab"}, "40 33"}, // done this week: not the one from September
+		{[]string{"tab"}, "42 38"},       // due today
+		{[]string{"tab"}, "44 29"},       // overdue
+		{[]string{"tab"}, "38"},          // with Claude
+		{[]string{"tab"}, "40 33"},       // done this week: not the one from September
+		{[]string{"tab"}, "44 42 38 29"}, // today: overdue and due today, as the Dock counts them
 		{[]string{"tab"}, "41 44 42 43 38 35 29 40 33 12"},
-		{[]string{"shift+tab"}, "40 33"},
+		{[]string{"shift+tab"}, "44 42 38 29"},
 		{[]string{"3"}, "44 29"},
+		{[]string{"6"}, "44 42 38 29"},
 		{[]string{"1"}, "41 44 42 43 38 35 29 40 33 12"},
 		{[]string{"2", "esc"}, "41 44 42 43 38 35 29 40 33 12"},
 	} {
@@ -287,6 +290,48 @@ func TestTilesFilter(t *testing.T) {
 		}
 	}
 	golden.RequireEqual(t, []byte(plain(press(m, "3"))))
+}
+
+func TestSortPresets(t *testing.T) {
+	m := board(t, 120, 30)
+	usual := m.columns()
+	statusLine := func(m Model) string {
+		lines := strings.Split(plain(m), "\n")
+		return lines[len(lines)-2]
+	}
+	m = press(m, "l") // a card in the second column, to follow
+	picked := m.selected().ID
+	for i, want := range []string{"due date", "priority", "newest", "title", ""} {
+		m = press(m, "o")
+		if said := strings.Contains(statusLine(m), "sorted by"); said != (want != "") || !strings.Contains(statusLine(m), "sorted by "+want) && said {
+			t.Errorf("press %d: the status line says %q", i+1, statusLine(m))
+		}
+		if m.selected() == nil || m.selected().ID != picked {
+			t.Errorf("press %d: the selection moved off #%d", i+1, picked)
+		}
+		// Each column is sorted on its own, by the app's rules. The default is the
+		// order the list came in, which the app has already put it in.
+		for c, col := range m.columns() {
+			want := usual[c]
+			if m.order > 0 {
+				want = query.Sorted(usual[c], api.Task.AsQuery, sorts[m.order].sort)
+			}
+			if fmt.Sprint(ids(col)) != fmt.Sprint(ids(want)) {
+				t.Errorf("press %d, column %d: %v, want %v", i+1, c, ids(col), ids(want))
+			}
+		}
+	}
+	if fmt.Sprint(m.columns()) != fmt.Sprint(usual) {
+		t.Errorf("five presses come back to the usual order")
+	}
+}
+
+func ids(list []api.Task) []int {
+	out := []int{}
+	for _, t := range list {
+		out = append(out, t.ID)
+	}
+	return out
 }
 
 func TestSearch(t *testing.T) {

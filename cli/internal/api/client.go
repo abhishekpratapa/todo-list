@@ -365,9 +365,11 @@ func (o ListOptions) values() url.Values {
 	set("status", o.Status)
 	set("priority", o.Priority)
 	set("tag", o.Tag)
+	set("tagMode", o.TagMode)
 	set("assignee", o.Assignee)
 	set("due", o.Due)
 	set("q", o.Query)
+	set("sort", o.Sort)
 	if o.Project != nil {
 		q.Set("project", *o.Project)
 	}
@@ -435,6 +437,19 @@ func (c *Client) Due(ctx context.Context) (*Due, json.RawMessage, error) {
 		return nil, nil, err
 	}
 	var out Due
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, nil, fmt.Errorf("Todos sent an answer that could not be read: %w", err)
+	}
+	return &out, raw, nil
+}
+
+// Today asks for the Today view (revision 7), and returns the answer as it came too.
+func (c *Client) Today(ctx context.Context) (*Today, json.RawMessage, error) {
+	var raw json.RawMessage
+	if err := c.do(ctx, request{method: "GET", path: v1 + "/today"}, &raw); err != nil {
+		return nil, nil, err
+	}
+	var out Today
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, nil, fmt.Errorf("Todos sent an answer that could not be read: %w", err)
 	}

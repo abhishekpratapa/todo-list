@@ -2,11 +2,19 @@
 // socket or over HTTPS to another Mac. The shapes here follow docs/openapi.json.
 package api
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"todos/internal/query"
+)
 
 // RequiredRevision is the oldest API revision this client works with: the one
 // that added the local socket and GET /info.
 const RequiredRevision = 4
+
+// ListsRevision is the API revision that added sorting (`sort`), lists of
+// projects and tags, `tagMode`, due tomorrow, before: and after:, and GET /today.
+const ListsRevision = 7
 
 type Subtask struct {
 	ID    int    `json:"id"`
@@ -90,6 +98,18 @@ func (t *Task) SubtasksDone() int {
 	return n
 }
 
+// AsQuery is the task as the app's rules for lists see it (see internal/query).
+func (t Task) AsQuery() query.Task {
+	q := query.Task{
+		ID: t.ID, Title: t.Title, Notes: t.Notes, Status: t.Status, Priority: t.Priority, Assignee: t.Assignee,
+		Due: t.Due, Project: t.Project, Tags: t.Tags, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, CompletedAt: t.CompletedAt,
+	}
+	for _, sub := range t.Subtasks {
+		q.Subtasks = append(q.Subtasks, sub.Title)
+	}
+	return q
+}
+
 // CommentCount is the number of comments, whichever form the task came in.
 func (t *Task) CommentCount() int {
 	if t.Activity == nil {
@@ -169,6 +189,15 @@ type Due struct {
 	Date     string         `json:"date"`
 }
 
+// Today is what GET /today answers: open tasks overdue, then due today, each
+// most important first.
+type Today struct {
+	Overdue []Task         `json:"overdue"`
+	Today   []Task         `json:"today"`
+	Counts  map[string]int `json:"counts"`
+	Date    string         `json:"date"`
+}
+
 // Summary is what GET /summary answers. Date is today on the Mac.
 type Summary struct {
 	Counts Counts `json:"counts"`
@@ -202,15 +231,18 @@ type ClaudeSession struct {
 	Claude string   `json:"claude"` // where the app found `claude`, or empty
 }
 
-// ListOptions are the filters GET /tasks takes. Empty fields are left out.
+// ListOptions are the filters and the sort GET /tasks takes. Empty fields are
+// left out. Lists are separated by commas.
 type ListOptions struct {
 	Status   string // open (default), all, or statuses separated by commas
 	Priority string
 	Tag      string
+	TagMode  string  // any (the default) or all of the tags; revision 7
 	Project  *string // a pointer, because "" means tasks with no project
 	Assignee string
 	Due      string
 	Query    string
+	Sort     string // "due,-priority"; empty for the usual order; revision 7
 	Limit    int
 	Offset   int
 }

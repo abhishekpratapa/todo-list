@@ -24,6 +24,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"todos/internal/query"
 )
 
 type Subtask struct {
@@ -380,11 +382,6 @@ func (s *Server) changed() {
 	}
 }
 
-var (
-	statusOrder   = map[string]int{"in_progress": 0, "blocked": 1, "todo": 2, "done": 3}
-	priorityOrder = map[string]int{"high": 0, "medium": 1, "low": 2}
-)
-
 func deref(p *string) string {
 	if p == nil {
 		return ""
@@ -392,33 +389,21 @@ func deref(p *string) string {
 	return *p
 }
 
-// sorted orders tasks as the app does: by status, then priority, then due date.
-func sorted(list []*Task) []*Task {
-	out := append([]*Task(nil), list...)
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.Status != b.Status {
-			return statusOrder[a.Status] < statusOrder[b.Status]
-		}
-		if a.Status == "done" {
-			return deref(a.CompletedAt) > deref(b.CompletedAt)
-		}
-		if a.Priority != b.Priority {
-			return priorityOrder[a.Priority] < priorityOrder[b.Priority]
-		}
-		if deref(a.Due) != deref(b.Due) {
-			if a.Due == nil {
-				return false
-			}
-			if b.Due == nil {
-				return true
-			}
-			return *a.Due < *b.Due
-		}
-		return a.ID < b.ID
-	})
-	return out
+// view is a task as the rules see it (see internal/query, the app's own rules in Go).
+func view(t *Task) query.Task {
+	q := query.Task{
+		ID: t.ID, Title: t.Title, Notes: t.Notes, Status: t.Status, Priority: t.Priority, Assignee: t.Assignee,
+		Due: deref(t.Due), Project: deref(t.Project), Tags: t.Tags,
+		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, CompletedAt: deref(t.CompletedAt),
+	}
+	for _, sub := range t.Subtasks {
+		q.Subtasks = append(q.Subtasks, sub.Title)
+	}
+	return q
 }
+
+// sorted orders tasks as the app does by default: by status, then priority, then due date.
+func sorted(list []*Task) []*Task { return query.Sorted(list, view, query.DefaultSort) }
 
 // brief is a task as lists show it: no activity, and a count of comments.
 func brief(t *Task) map[string]any {
@@ -1155,6 +1140,16 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request, local bool, path 
 	case path == "/due" && r.Method == "GET":
 		writeJSON(w, 200, s.due())
 
+	case path == "/today" && r.Method == "GET":
+		if s.Revision < 7 {
+			notFound()
+			return
+		}
+		t0 := s.today()
+		overdue, today := query.Today(s.tasks, view, t0, query.TodaySort)
+		counts := map[string]int{"overdue": len(overdue), "today": len(today), "total": len(overdue) + len(today)}
+		writeJSON(w, 200, map[string]any{"overdue": briefs(overdue), "today": briefs(today), "counts": counts, "date": t0})
+
 	case path == "/summary" && r.Method == "GET":
 		writeJSON(w, 200, map[string]any{"counts": s.counts(), "daily": nil, "date": s.today()})
 
@@ -1482,53 +1477,24 @@ func (s *Server) createFrom(in map[string]any, via, key string) (*Task, error) {
 
 func (s *Server) list(r *http.Request) (map[string]any, error) {
 	q := r.URL.Query()
-	many := func(name string, allowed ...string) ([]string, error) {
-		rawValue := q.Get(name)
-		if rawValue == "" {
-			return nil, nil
+	// The filters and the sort, read by the app's rules. Status is "open" unless
+	// it says otherwise; the other filters are left out when they aren't given.
+	fields := map[string]string{}
+	for _, name := range query.FilterFields {
+		if v, ok := q[name]; ok {
+			fields[name] = v[0]
 		}
-		var out []string
-		for _, given := range strings.Split(rawValue, ",") {
-			v, err := oneOf(name, given, allowed...)
-			if err != nil {
-				return nil, refuse(400, "invalid", "Invalid %s %q. Expected one of: %s.", name, strings.TrimSpace(given), strings.Join(allowed, ", "))
-			}
-			out = append(out, v)
-		}
-		return out, nil
 	}
-	has := func(list []string, v string) bool {
-		for _, x := range list {
-			if x == v {
-				return true
-			}
-		}
-		return false
+	if fields["status"] == "" {
+		fields["status"] = "open"
 	}
-	statuses, err := many("status", "open", "all", "todo", "in_progress", "blocked", "done")
+	filter, err := query.ParseFilter(fields)
 	if err != nil {
-		return nil, err
+		return nil, refuse(400, "invalid", "%s", err)
 	}
-	switch {
-	case statuses == nil:
-		statuses = []string{"todo", "in_progress", "blocked"}
-	case has(statuses, "all"):
-		statuses = []string{"todo", "in_progress", "blocked", "done"}
-	case has(statuses, "open"):
-		statuses = append(statuses, "todo", "in_progress", "blocked")
-	}
-	priorities, err := many("priority", "high", "medium", "low")
+	order, err := query.ParseSort(q.Get("sort"))
 	if err != nil {
-		return nil, err
-	}
-	assignees, err := many("assignee", "me", "claude")
-	if err != nil {
-		return nil, err
-	}
-	due := strings.ToLower(q.Get("due"))
-	isDate := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(due)
-	if due != "" && !isDate && !has([]string{"overdue", "today", "week", "none", "any"}, due) {
-		return nil, refuse(400, "invalid", "Invalid due. Expected overdue, today, week, none, any, or a date (YYYY-MM-DD) to list what is due on or before it.")
+		return nil, refuse(400, "invalid", "%s", err)
 	}
 	number := func(name string, fallback, max int) (int, error) {
 		rawValue := q.Get(name)
@@ -1553,45 +1519,7 @@ func (s *Server) list(r *http.Request) (map[string]any, error) {
 		return nil, err
 	}
 
-	t0 := s.today()
-	week := s.Now().AddDate(0, 0, 7).Format("2006-01-02")
-	tag := strings.ToLower(strings.TrimLeft(q.Get("tag"), "#@"))
-	words := strings.Fields(strings.ToLower(q.Get("q")))
-	_, byProject := q["project"]
-	project := strings.ToLower(q.Get("project"))
-
-	var matching []*Task
-	for _, t := range s.tasks {
-		d := deref(t.Due)
-		dueOK := true
-		switch {
-		case due == "overdue":
-			dueOK = d != "" && d < t0 && t.Status != "done"
-		case due == "today":
-			dueOK = d == t0
-		case due == "week":
-			dueOK = d != "" && d >= t0 && d <= week
-		case due == "none":
-			dueOK = d == ""
-		case due == "any":
-			dueOK = d != ""
-		case isDate:
-			dueOK = d != "" && d <= due
-		}
-		text := strings.ToLower(strings.Join(append([]string{t.Title, t.Notes, deref(t.Project)}, t.Tags...), "\n"))
-		for _, sub := range t.Subtasks {
-			text += "\n" + strings.ToLower(sub.Title)
-		}
-		wordsOK := true
-		for _, word := range words {
-			wordsOK = wordsOK && strings.Contains(text, word)
-		}
-		if has(statuses, t.Status) && (priorities == nil || has(priorities, t.Priority)) && (assignees == nil || has(assignees, t.Assignee)) &&
-			(!byProject || strings.ToLower(deref(t.Project)) == project) && (tag == "" || has(t.Tags, tag)) && dueOK && wordsOK {
-			matching = append(matching, t)
-		}
-	}
-	matching = sorted(matching)
+	matching := query.Select(s.tasks, view, filter, order, s.today())
 	total := len(matching)
 	if offset > total {
 		offset = total
@@ -1606,7 +1534,9 @@ func (s *Server) list(r *http.Request) (map[string]any, error) {
 func (s *Server) due() map[string]any {
 	t0 := s.today()
 	week := s.Now().AddDate(0, 0, 7).Format("2006-01-02")
-	groups := map[string][]*Task{"overdue": {}, "today": {}, "upcoming": {}, "undated": {}, "later": {}}
+	// Overdue and today are the Today view's groups, in the list's usual order.
+	overdue, today := query.Today(s.tasks, view, t0, query.DefaultSort)
+	groups := map[string][]*Task{"overdue": append([]*Task{}, overdue...), "today": append([]*Task{}, today...), "upcoming": {}, "undated": {}, "later": {}}
 	for _, t := range sorted(s.tasks) {
 		if t.Status == "done" {
 			continue
@@ -1615,10 +1545,8 @@ func (s *Server) due() map[string]any {
 		switch {
 		case d == "":
 			groups["undated"] = append(groups["undated"], t)
-		case d < t0:
-			groups["overdue"] = append(groups["overdue"], t)
-		case d == t0:
-			groups["today"] = append(groups["today"], t)
+		case d <= t0:
+			// overdue or today: above
 		case d <= week:
 			groups["upcoming"] = append(groups["upcoming"], t)
 		default:

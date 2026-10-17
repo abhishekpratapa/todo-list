@@ -35,6 +35,9 @@ type Profile struct {
 type File struct {
 	Default  string              `json:"default,omitempty"`
 	Profiles map[string]*Profile `json:"profiles"`
+	// Sort is what `todos ls` sorts by when --sort isn't given ("due,-priority").
+	// It is only ever written by hand.
+	Sort string `json:"sort,omitempty"`
 }
 
 // Dir is the config directory.

@@ -5,7 +5,7 @@ import "charm.land/bubbles/v2/key"
 // KeyMap is every key the board answers to. It also drives the help.
 type KeyMap struct {
 	Up, Down, Left, Right, Top, Bottom key.Binding
-	NextTile, PrevTile                 key.Binding
+	NextTile, PrevTile, Sort           key.Binding
 	Search, Open, Back, Refresh        key.Binding
 	Help, Quit                         key.Binding
 
@@ -32,6 +32,7 @@ func newKeys() KeyMap {
 		Bottom:   b("G", "last", "G", "end"),
 		NextTile: b("tab", "next filter", "tab"),
 		PrevTile: b("shift+tab", "previous filter", "shift+tab"),
+		Sort:     b("o", "sort: default, due, priority, newest, title", "o"),
 		Search:   b("/", "search", "/"),
 		Open:     b("enter", "open", "enter"),
 		Back:     b("esc", "back", "esc"),
